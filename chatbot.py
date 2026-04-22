@@ -47,9 +47,12 @@ def main() -> None:
             continue
 
         print("\nAssistant: ", end="", flush=True)
-        for chunk in chatbot.chat(user_input):
+        full_response = ""
+        for chunk in chatbot.stream(user_input):
+            full_response += chunk
             print(chunk, end="", flush=True)
         print()
+        chatbot.commit(user_input, full_response)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,9 @@ chroma_db/
 # Uploaded documents
 uploads/
 
+# Chat history
+chat_history.db
+
 # Node
 frontend/node_modules/
 frontend/dist/

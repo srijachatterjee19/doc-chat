@@ -228,6 +228,16 @@ body {
   border-bottom-left-radius: 4px;
 }
 
+/* ── Interrupted notice ── */
+
+.interrupted-notice {
+  padding: 8px 40px;
+  font-size: 12px;
+  color: var(--warning-text);
+  background: var(--warning-bg);
+  border-top: 1px solid var(--border);
+}
+
 /* ── Input ── */
 
 .input-area {

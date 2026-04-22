@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """FastAPI backend exposing the RAG chatbot as a streaming HTTP API."""
 import json
-import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -26,7 +25,7 @@ _chatbot: RAGChatbot
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(__: FastAPI):
     global _embedding_model, _vector_store, _chatbot
     _embedding_model = EmbeddingModel()
     _vector_store = VectorStore()
@@ -62,6 +61,12 @@ def _get_chat_models() -> list[str]:
         return ["llama3.2"]
 
 
+@app.get("/api/history")
+def history():
+    """Return the persisted conversation history."""
+    return {"messages": _chatbot.history}
+
+
 @app.get("/api/status")
 def status():
     """Return the number of ingested document chunks."""
@@ -82,8 +87,12 @@ def chat(request: ChatRequest):
         _chatbot.reset()
 
     def generate():
-        for chunk in _chatbot.chat(request.message):
+        full_response = ""
+        for chunk in _chatbot.stream(request.message):
+            full_response += chunk
             yield f"data: {json.dumps({'text': chunk})}\n\n"
+        if full_response:
+            _chatbot.commit(request.message, full_response)
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -93,6 +102,15 @@ def chat(request: ChatRequest):
 def reset():
     """Clear the chatbot's conversation history."""
     _chatbot.reset()
+    return {"ok": True}
+
+
+@app.post("/api/history/rollback")
+def history_rollback():
+    """Remove the last message when it is an orphaned user turn with no assistant reply."""
+    _chatbot._db.rollback_last()
+    if _chatbot.history and _chatbot.history[-1]["role"] == "user":
+        _chatbot.history.pop()
     return {"ok": True}
 
 

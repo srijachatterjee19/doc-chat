@@ -15,6 +15,7 @@ export default function App() {
   const [streaming, setStreaming] = useState(false)
   const [showMenu, setShowMenu] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [interrupted, setInterrupted] = useState(false)
   const [theme, setTheme] = useState(getInitialTheme)
   const bottomRef = useRef(null)
   const menuRef = useRef(null)
@@ -35,6 +36,17 @@ export default function App() {
     fetch('/api/status')
       .then(r => r.json())
       .then(d => setDocCount(d.doc_count))
+    fetch('/api/history')
+      .then(r => r.json())
+      .then(d => {
+        const msgs = d.messages
+        // If the last message is from the user, the previous response was interrupted
+        if (msgs.length > 0 && msgs[msgs.length - 1].role === 'user') {
+          fetch('/api/history/rollback', { method: 'POST' })
+          setInterrupted(true)
+        }
+        setMessages(msgs)
+      })
   }, [])
 
   useEffect(() => {
@@ -56,6 +68,7 @@ export default function App() {
 
     const userMsg = input.trim()
     setInput('')
+    setInterrupted(false)
     setMessages(prev => [...prev, { role: 'user', content: userMsg }])
     setStreaming(true)
     setMessages(prev => [...prev, { role: 'assistant', content: '' }])
@@ -194,6 +207,12 @@ export default function App() {
           ))}
           <div ref={bottomRef} />
         </div>
+
+        {interrupted && (
+          <div className="interrupted-notice">
+            Sorry, your last message was interrupted. Please try again.
+          </div>
+        )}
 
         <div className="input-area">
           <select
