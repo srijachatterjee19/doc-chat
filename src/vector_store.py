@@ -48,6 +48,15 @@ class VectorStore:
         if ids:
             self._store._collection.delete(ids=ids)
 
+    def list_sources(self) -> list[dict]:
+        """Return each ingested source file with its chunk count."""
+        result = self._store._collection.get(include=["metadatas"])
+        sources: dict[str, int] = {}
+        for meta in result["metadatas"]:
+            name = meta.get("source", "unknown")
+            sources[name] = sources.get(name, 0) + 1
+        return [{"name": name, "chunks": count} for name, count in sorted(sources.items())]
+
     def count(self) -> int:
         """Return the total number of stored chunks."""
         return self._store._collection.count()

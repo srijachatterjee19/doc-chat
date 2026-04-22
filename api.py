@@ -70,6 +70,12 @@ def status():
     return {"doc_count": _vector_store.count()}
 
 
+@app.get("/api/documents")
+def documents():
+    """Return all ingested source files and their chunk counts."""
+    return {"documents": _vector_store.list_sources()}
+
+
 @app.get("/api/models")
 def models():
     """Return available Ollama chat models."""

@@ -12,6 +12,7 @@ export default function App() {
   const [models, setModels] = useState([])
   const [selectedModel, setSelectedModel] = useState('')
   const [docCount, setDocCount] = useState(0)
+  const [documents, setDocuments] = useState([])
   const [streaming, setStreaming] = useState(false)
   const [showMenu, setShowMenu] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -26,6 +27,12 @@ export default function App() {
     localStorage.setItem('theme', theme)
   }, [theme])
 
+  async function refreshDocuments() {
+    const d = await fetch('/api/documents').then(r => r.json())
+    setDocuments(d.documents)
+    setDocCount(d.documents.reduce((sum, doc) => sum + doc.chunks, 0))
+  }
+
   useEffect(() => {
     fetch('/api/models')
       .then(r => r.json())
@@ -33,14 +40,11 @@ export default function App() {
         setModels(d.models)
         setSelectedModel(d.models[0] ?? 'llama3.2')
       })
-    fetch('/api/status')
-      .then(r => r.json())
-      .then(d => setDocCount(d.doc_count))
+    refreshDocuments()
     fetch('/api/history')
       .then(r => r.json())
       .then(d => {
         const msgs = d.messages
-        // If the last message is from the user, the previous response was interrupted
         if (msgs.length > 0 && msgs[msgs.length - 1].role === 'user') {
           fetch('/api/history/rollback', { method: 'POST' })
           setInterrupted(true)
@@ -130,7 +134,6 @@ export default function App() {
     if (!file) return
     e.target.value = ''
     setUploading(true)
-    setShowMenu(false)
     try {
       const form = new FormData()
       form.append('file', file)
@@ -140,8 +143,7 @@ export default function App() {
         alert(err.detail ?? 'Upload failed.')
         return
       }
-      const { doc_count } = await res.json()
-      setDocCount(doc_count)
+      await refreshDocuments()
     } finally {
       setUploading(false)
     }
@@ -149,6 +151,42 @@ export default function App() {
 
   return (
     <div className="app">
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <span className="sidebar-title">Documents</span>
+          <button
+            className="upload-btn"
+            onClick={() => fileInputRef.current.click()}
+            disabled={uploading}
+            title="Upload document"
+          >
+            {uploading ? '…' : '+'}
+          </button>
+        </div>
+
+        <div className="sidebar-docs">
+          {documents.length === 0 ? (
+            <p className="sidebar-empty">No documents yet</p>
+          ) : (
+            documents.map(doc => (
+              <div key={doc.name} className="doc-item">
+                <span className="doc-icon">⬡</span>
+                <span className="doc-name" title={doc.name}>{doc.name}</span>
+                <span className="doc-chunks">{doc.chunks}</span>
+              </div>
+            ))
+          )}
+        </div>
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".txt,.md,.pdf"
+          style={{ display: 'none' }}
+          onChange={handleUpload}
+        />
+      </aside>
+
       <main className="chat">
         <div className="chat-header">
           {docCount === 0 ? (
@@ -156,7 +194,7 @@ export default function App() {
               No documents loaded — run: <code>python ingest.py data/sample.txt</code>
             </span>
           ) : (
-            <span className="header-doc-count">{docCount} document chunks loaded</span>
+            <span className="header-doc-count">{docCount} chunks across {documents.length} file{documents.length !== 1 ? 's' : ''}</span>
           )}
 
           <div className="header-actions">
@@ -174,9 +212,6 @@ export default function App() {
               </button>
               {showMenu && (
                 <div className="dropdown">
-                  <button className="dropdown-item" onClick={() => fileInputRef.current.click()}>
-                    {uploading ? 'Uploading…' : 'Upload document'}
-                  </button>
                   <button className="dropdown-item" onClick={clearConversation}>
                     Clear conversation
                   </button>
@@ -184,14 +219,6 @@ export default function App() {
               )}
             </div>
           </div>
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".txt,.md,.pdf"
-            style={{ display: 'none' }}
-            onChange={handleUpload}
-          />
         </div>
 
         <div className="messages">
