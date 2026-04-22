@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """FastAPI backend exposing the RAG chatbot as a streaming HTTP API."""
 import json
+import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from uuid import uuid4
 
 import ollama
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +20,38 @@ from src.rag import RAGChatbot
 from src.vector_store import VectorStore
 
 load_dotenv()
+
+# --- Structured JSON logging ---
+
+class _JsonFormatter(logging.Formatter):
+    _SKIP = {
+        "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+        "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+        "created", "msecs", "relativeCreated", "thread", "threadName",
+        "processName", "process", "message", "taskName",
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        record.message = record.getMessage()
+        data: dict = {
+            "time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "message": record.message,
+        }
+        for key, val in record.__dict__.items():
+            if key not in self._SKIP:
+                data[key] = val
+        if record.exc_info:
+            data["exception"] = self.formatException(record.exc_info)
+        return json.dumps(data)
+
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_JsonFormatter())
+logger = logging.getLogger("api")
+logger.setLevel(logging.INFO)
+logger.addHandler(_handler)
+logger.propagate = False
 
 _vector_store: VectorStore
 _chatbot: RAGChatbot
@@ -38,6 +73,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def track_requests(request: Request, call_next):
+    request_id = uuid4().hex[:8]
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = round((time.perf_counter() - start) * 1000, 1)
+    logger.info(
+        "%s %s",
+        request.method,
+        request.url.path,
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+            "client_ip": request.client.host if request.client else None,
+        },
+    )
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Duration-Ms"] = str(duration_ms)
+    return response
 
 
 class ChatRequest(BaseModel):
@@ -91,11 +150,26 @@ def chat(request: ChatRequest):
 
     def generate():
         full_response = ""
+        stream_start = time.perf_counter()
+        first_token_ms: float | None = None
         for chunk in _chatbot.stream(request.message):
+            if first_token_ms is None:
+                first_token_ms = round((time.perf_counter() - stream_start) * 1000, 1)
             full_response += chunk
             yield f"data: {json.dumps({'text': chunk})}\n\n"
         if full_response:
             _chatbot.commit(request.message, full_response)
+            logger.info(
+                "chat completed",
+                extra={
+                    "event": "chat",
+                    "model": request.model,
+                    "message_chars": len(request.message),
+                    "response_chars": len(full_response),
+                    "first_token_ms": first_token_ms,
+                    "total_stream_ms": round((time.perf_counter() - stream_start) * 1000, 1),
+                },
+            )
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -133,7 +207,17 @@ async def upload(file: UploadFile = File(...)):
     dest = _UPLOADS_DIR / file.filename
     dest.write_bytes(content)
     ingest_file(str(dest), _vector_store)
-    return {"ok": True, "doc_count": _vector_store.count()}
+    doc_count = _vector_store.count()
+    logger.info(
+        "document ingested",
+        extra={
+            "event": "upload",
+            "filename": file.filename,
+            "file_bytes": len(content),
+            "doc_count": doc_count,
+        },
+    )
+    return {"ok": True, "doc_count": doc_count}
 
 
 # Serve the production React build when it exists

@@ -143,6 +143,14 @@ body {
   font-size: 13px;
   color: var(--text);
   min-width: 0;
+  cursor: pointer;
+  border-radius: 6px;
+  margin: 0 6px;
+  transition: background 0.15s;
+}
+
+.doc-item:hover {
+  background: var(--surface-2);
 }
 
 .doc-icon {

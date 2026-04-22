@@ -169,9 +169,14 @@ export default function App() {
             <p className="sidebar-empty">No documents yet</p>
           ) : (
             documents.map(doc => (
-              <div key={doc.name} className="doc-item">
+              <div
+                key={doc.name}
+                className="doc-item"
+                onClick={() => setInput(`What is ${doc.name} about?`)}
+                title={`Ask about ${doc.name}`}
+              >
                 <span className="doc-icon">⬡</span>
-                <span className="doc-name" title={doc.name}>{doc.name}</span>
+                <span className="doc-name">{doc.name}</span>
                 <span className="doc-chunks">{doc.chunks}</span>
               </div>
             ))

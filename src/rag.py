@@ -20,7 +20,7 @@ After every answer, add a new line followed by:
 - [suggestion 2]
 - [suggestion 3]
 
-Suggestions must be related to the document context and follow naturally from the current question."""
+Base the suggestions strictly on the "Related sections" provided in the message — they are document chunks semantically similar to the question. Each suggestion should be a natural question a user could ask about one of those related sections."""
 
 
 class RAGChatbot:
@@ -60,12 +60,19 @@ class RAGChatbot:
         response = self._llm.invoke([HumanMessage(content=prompt)])
         return response.content.strip()
 
-    def _retrieve_context(self, query: str, n_results: int = 3) -> str:
-        """Return top-n document chunks as a formatted string."""
-        docs = self.vector_store.similarity_search(query, k=n_results)
+    def _retrieve_context(self, query: str, n_results: int = 3) -> tuple[str, str]:
+        """Return (answer_context, suggestion_context).
+
+        Fetches 2×n_results chunks: top-n for answering, next-n as suggestion seeds.
+        """
+        docs = self.vector_store.similarity_search(query, k=n_results * 2)
         if not docs:
-            return ""
-        return "\n\n".join(f"[Document {i + 1}]\n{doc}" for i, doc in enumerate(docs))
+            return "", ""
+        answer_docs = docs[:n_results]
+        suggest_docs = docs[n_results:]
+        answer_ctx = "\n\n".join(f"[Document {i + 1}]\n{doc}" for i, doc in enumerate(answer_docs))
+        suggest_ctx = "\n\n".join(f"[Related {i + 1}]\n{doc}" for i, doc in enumerate(suggest_docs))
+        return answer_ctx, suggest_ctx
 
     def _build_messages(self, augmented_message: str) -> list:
         """Convert stored history dicts + new message into LangChain message objects."""
@@ -83,11 +90,18 @@ class RAGChatbot:
         self._db.append("user", user_message)
 
         retrieval_query = self._rewrite_query(user_message)
-        context = self._retrieve_context(retrieval_query)
+        context, related = self._retrieve_context(retrieval_query)
 
-        augmented_message = (
-            f"Context:\n{context}\n\nQuestion: {user_message}" if context else user_message
-        )
+        if context and related:
+            augmented_message = (
+                f"Context:\n{context}\n\n"
+                f"Related sections (base follow-up suggestions on these):\n{related}\n\n"
+                f"Question: {user_message}"
+            )
+        elif context:
+            augmented_message = f"Context:\n{context}\n\nQuestion: {user_message}"
+        else:
+            augmented_message = user_message
 
         for chunk in self._llm.stream(self._build_messages(augmented_message)):
             yield chunk.content
