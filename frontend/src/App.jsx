@@ -14,9 +14,11 @@ export default function App() {
   const [docCount, setDocCount] = useState(0)
   const [streaming, setStreaming] = useState(false)
   const [showMenu, setShowMenu] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [theme, setTheme] = useState(getInitialTheme)
   const bottomRef = useRef(null)
   const menuRef = useRef(null)
+  const fileInputRef = useRef(null)
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
@@ -110,6 +112,28 @@ export default function App() {
     clearConversation()
   }
 
+  async function handleUpload(e) {
+    const file = e.target.files[0]
+    if (!file) return
+    e.target.value = ''
+    setUploading(true)
+    setShowMenu(false)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const res = await fetch('/api/upload', { method: 'POST', body: form })
+      if (!res.ok) {
+        const err = await res.json()
+        alert(err.detail ?? 'Upload failed.')
+        return
+      }
+      const { doc_count } = await res.json()
+      setDocCount(doc_count)
+    } finally {
+      setUploading(false)
+    }
+  }
+
   return (
     <div className="app">
       <main className="chat">
@@ -137,6 +161,9 @@ export default function App() {
               </button>
               {showMenu && (
                 <div className="dropdown">
+                  <button className="dropdown-item" onClick={() => fileInputRef.current.click()}>
+                    {uploading ? 'Uploading…' : 'Upload document'}
+                  </button>
                   <button className="dropdown-item" onClick={clearConversation}>
                     Clear conversation
                   </button>
@@ -144,6 +171,14 @@ export default function App() {
               )}
             </div>
           </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".txt,.md,.pdf"
+            style={{ display: 'none' }}
+            onChange={handleUpload}
+          />
         </div>
 
         <div className="messages">

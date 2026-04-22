@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Ingest documents into the ChromaDB vector store."""
+"""
+Ingest documents into the ChromaDB vector store.
+
+Usage:
+    python ingest.py file.txt [file2.pdf ...]   # ingest one or more files
+    python ingest.py --clear                    # wipe all stored chunks
+    python ingest.py --clear file.txt           # wipe then re-ingest
+    python ingest.py --chunk-size 400 --overlap 50 file.pdf   # custom chunking
+
+Supported formats: .txt, .md, .pdf
+Files already present in the store (matched by filename) are skipped.
+"""
 import argparse
 import uuid
 from pathlib import Path
@@ -20,19 +31,39 @@ def chunk_text(text: str, chunk_size: int = 200, overlap: int = 20) -> list[str]
     while i < len(words):
         chunk = " ".join(words[i : i + chunk_size])
         chunks.append(chunk)
+        # Step forward by (chunk_size - overlap) so the next chunk
+        # re-uses the last `overlap` words, preserving cross-boundary context.
         i += chunk_size - overlap
     return [c for c in chunks if c.strip()]
 
 
-def ingest_file(
-    filepath: str, embedding_model: EmbeddingModel, vector_store: VectorStore
-) -> None:
-    """Chunk a text file, embed the chunks, and store them in the vector store."""
-    path = Path(filepath)
-    print(f"Ingesting: {path.name}")
+def read_file(path: Path) -> str:
+    """Extract text from .txt, .md, or .pdf files."""
+    if path.suffix.lower() == ".pdf":
+        from pypdf import PdfReader
+        reader = PdfReader(path)
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    return path.read_text(encoding="utf-8")
 
-    text = path.read_text(encoding="utf-8")
-    chunks = chunk_text(text)
+
+def ingest_file(
+    filepath: str,
+    embedding_model: EmbeddingModel,
+    vector_store: VectorStore,
+    chunk_size: int = 200,
+    overlap: int = 20,
+) -> None:
+    """Chunk a file, embed the chunks, and store them in the vector store."""
+    path = Path(filepath)
+
+    existing = vector_store.collection.get(where={"source": {"$eq": path.name}})
+    if existing["ids"]:
+        print(f"  Skipping {path.name} — already ingested ({len(existing['ids'])} chunks)")
+        return
+
+    print(f"Ingesting: {path.name}")
+    text = read_file(path)
+    chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
     embeddings = embedding_model.embed(chunks)
 
     ids = [str(uuid.uuid4()) for _ in chunks]
@@ -42,24 +73,40 @@ def ingest_file(
     print(f"  Added {len(chunks)} chunks from {path.name}")
 
 
+def clear_store(vector_store: VectorStore) -> None:
+    """Delete all chunks from the vector store."""
+    ids = vector_store.collection.get()["ids"]
+    if ids:
+        vector_store.collection.delete(ids=ids)
+    print(f"Cleared {len(ids)} chunks.")
+
+
 def main() -> None:
     """Parse CLI arguments and ingest each provided file into the vector store."""
     parser = argparse.ArgumentParser(
         description="Ingest documents into the RAG vector store"
     )
-    parser.add_argument("files", nargs="+", help="Text files to ingest")
+    parser.add_argument("files", nargs="*", help="Files to ingest (.txt, .md, .pdf)")
+    parser.add_argument("--clear", action="store_true", help="Clear all stored chunks before ingesting")
+    parser.add_argument("--chunk-size", type=int, default=200, help="Words per chunk (default: 200)")
+    parser.add_argument("--overlap", type=int, default=20, help="Overlapping words between chunks (default: 20)")
     args = parser.parse_args()
 
-    print("Loading embedding model...")
-    embedding_model = EmbeddingModel()
     vector_store = VectorStore()
 
-    for filepath in args.files:
-        path = Path(filepath)
-        if path.exists():
-            ingest_file(filepath, embedding_model, vector_store)
-        else:
-            print(f"File not found: {filepath}")
+    if args.clear:
+        clear_store(vector_store)
+
+    if args.files:
+        print("Loading embedding model...")
+        embedding_model = EmbeddingModel()
+        for filepath in args.files:
+            path = Path(filepath)
+            if path.exists():
+                ingest_file(filepath, embedding_model, vector_store,
+                            chunk_size=args.chunk_size, overlap=args.overlap)
+            else:
+                print(f"File not found: {filepath}")
 
     print(f"\nVector store now contains {vector_store.count()} document chunks.")
 

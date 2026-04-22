@@ -39,13 +39,30 @@ cd frontend && npm install
 
 ## Ingest documents
 
+Supported formats: `.txt`, `.md`, `.pdf`
+
 ```bash
+# ingest one or more files
 python ingest.py data/sample.txt
-# or multiple files
-python ingest.py path/to/file1.txt path/to/file2.txt
+python ingest.py file1.txt file2.pdf
+
+# clear all stored chunks
+python ingest.py --clear
+
+# clear then re-ingest
+python ingest.py --clear data/sample.txt
+
+# custom chunk size and overlap
+python ingest.py --chunk-size 400 --overlap 50 paper.pdf
 ```
 
-Documents are chunked into 200-word overlapping segments, embedded with `nomic-embed-text`, and stored in a persistent ChromaDB database (`./chroma_db`).
+Documents are split into overlapping word-count chunks, embedded with `nomic-embed-text`, and stored in `./chroma_db`. Files already in the store are skipped automatically (matched by filename).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--chunk-size` | `200` | Words per chunk |
+| `--overlap` | `20` | Words shared between consecutive chunks |
+| `--clear` | — | Wipe all chunks before ingesting |
 
 ---
 

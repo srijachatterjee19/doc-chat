@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """FastAPI backend exposing the RAG chatbot as a streaming HTTP API."""
 import json
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import ollama
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ingest import ingest_file
 from src.embeddings import EmbeddingModel
 from src.rag import RAGChatbot
 from src.vector_store import VectorStore
@@ -92,6 +94,25 @@ def reset():
     """Clear the chatbot's conversation history."""
     _chatbot.reset()
     return {"ok": True}
+
+
+_UPLOADS_DIR = Path(__file__).parent / "uploads"
+_MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+@app.post("/api/upload")
+async def upload(file: UploadFile = File(...)):
+    """Ingest an uploaded document and save the original to uploads/."""
+    if not file.filename.endswith((".txt", ".md", ".pdf")):
+        raise HTTPException(status_code=400, detail="Only .txt, .md, and .pdf files are supported.")
+    content = await file.read()
+    if len(content) > _MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 10 MB limit.")
+    _UPLOADS_DIR.mkdir(exist_ok=True)
+    dest = _UPLOADS_DIR / file.filename
+    dest.write_bytes(content)
+    ingest_file(str(dest), _embedding_model, _vector_store)
+    return {"ok": True, "doc_count": _vector_store.count()}
 
 
 # Serve the production React build when it exists
