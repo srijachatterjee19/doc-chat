@@ -1,8 +1,8 @@
 from collections.abc import Generator
 
-import ollama
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_ollama import ChatOllama
 
-from .embeddings import EmbeddingModel
 from .history import ChatHistory
 from .vector_store import VectorStore
 
@@ -26,19 +26,21 @@ Suggestions must be related to the document context and follow naturally from th
 class RAGChatbot:
     """Multi-turn chatbot that grounds responses in retrieved document context."""
 
-    def __init__(
-        self,
-        embedding_model: EmbeddingModel,
-        vector_store: VectorStore,
-        model: str = "llama3.2",
-    ):
-        self.client = ollama.Client()
-        self.model = model
-        self.embedding_model = embedding_model
+    def __init__(self, vector_store: VectorStore, model: str = "llama3.2"):
+        self._model = model
+        self._llm = ChatOllama(model=model)
         self.vector_store = vector_store
         self._db = ChatHistory()
-        # Load persisted history on startup; clean (no injected context) so turns stay stable
         self.history: list[dict] = self._db.load()
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @model.setter
+    def model(self, value: str) -> None:
+        self._model = value
+        self._llm = ChatOllama(model=value)
 
     def _rewrite_query(self, user_message: str) -> str:
         """Rewrite the user message as a standalone search query using recent history."""
@@ -55,24 +57,29 @@ class RAGChatbot:
             f"Return only the rewritten query, nothing else.\n\n"
             f"Question: {user_message}\nStandalone query:"
         )
-        response = self.client.chat(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            stream=False,
-        )
-        return response.message.content.strip()
+        response = self._llm.invoke([HumanMessage(content=prompt)])
+        return response.content.strip()
 
     def _retrieve_context(self, query: str, n_results: int = 3) -> str:
-        """Embed the query and return top-n document chunks as a formatted string."""
-        query_embedding = self.embedding_model.embed_single(query)
-        docs = self.vector_store.query(query_embedding, n_results=n_results)
+        """Return top-n document chunks as a formatted string."""
+        docs = self.vector_store.similarity_search(query, k=n_results)
         if not docs:
             return ""
         return "\n\n".join(f"[Document {i + 1}]\n{doc}" for i, doc in enumerate(docs))
 
+    def _build_messages(self, augmented_message: str) -> list:
+        """Convert stored history dicts + new message into LangChain message objects."""
+        messages = [SystemMessage(content=SYSTEM_PROMPT)]
+        for m in self.history:
+            if m["role"] == "user":
+                messages.append(HumanMessage(content=m["content"]))
+            elif m["role"] == "assistant":
+                messages.append(AIMessage(content=m["content"]))
+        messages.append(HumanMessage(content=augmented_message))
+        return messages
+
     def stream(self, user_message: str) -> Generator[str, None, None]:
         """Yield response tokens. Caller must call commit() after exhausting this generator."""
-        # Save user message immediately so a mid-stream refresh doesn't lose it
         self._db.append("user", user_message)
 
         retrieval_query = self._rewrite_query(user_message)
@@ -82,14 +89,8 @@ class RAGChatbot:
             f"Context:\n{context}\n\nQuestion: {user_message}" if context else user_message
         )
 
-        messages = (
-            [{"role": "system", "content": SYSTEM_PROMPT}]
-            + self.history
-            + [{"role": "user", "content": augmented_message}]
-        )
-
-        for chunk in self.client.chat(model=self.model, messages=messages, stream=True):
-            yield chunk.message.content
+        for chunk in self._llm.stream(self._build_messages(augmented_message)):
+            yield chunk.content
 
     def commit(self, user_message: str, assistant_response: str) -> None:
         """Persist a completed exchange to memory and the database."""

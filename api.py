@@ -13,23 +13,20 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ingest import ingest_file
-from src.embeddings import EmbeddingModel
 from src.rag import RAGChatbot
 from src.vector_store import VectorStore
 
 load_dotenv()
 
-_embedding_model: EmbeddingModel
 _vector_store: VectorStore
 _chatbot: RAGChatbot
 
 
 @asynccontextmanager
-async def lifespan(__: FastAPI):
-    global _embedding_model, _vector_store, _chatbot
-    _embedding_model = EmbeddingModel()
+async def lifespan(_app: FastAPI):
+    global _vector_store, _chatbot
     _vector_store = VectorStore()
-    _chatbot = RAGChatbot(_embedding_model, _vector_store)
+    _chatbot = RAGChatbot(_vector_store)
     yield
 
 
@@ -129,7 +126,7 @@ async def upload(file: UploadFile = File(...)):
     _UPLOADS_DIR.mkdir(exist_ok=True)
     dest = _UPLOADS_DIR / file.filename
     dest.write_bytes(content)
-    ingest_file(str(dest), _embedding_model, _vector_store)
+    ingest_file(str(dest), _vector_store)
     return {"ok": True, "doc_count": _vector_store.count()}
 
 

@@ -17,7 +17,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from src.embeddings import EmbeddingModel
 from src.vector_store import VectorStore
 
 load_dotenv()
@@ -48,37 +47,27 @@ def read_file(path: Path) -> str:
 
 def ingest_file(
     filepath: str,
-    embedding_model: EmbeddingModel,
     vector_store: VectorStore,
     chunk_size: int = 200,
     overlap: int = 20,
 ) -> None:
-    """Chunk a file, embed the chunks, and store them in the vector store."""
+    """Chunk a file and store the chunks in the vector store (embeddings handled internally)."""
     path = Path(filepath)
 
-    existing = vector_store.collection.get(where={"source": {"$eq": path.name}})
-    if existing["ids"]:
-        print(f"  Skipping {path.name} — already ingested ({len(existing['ids'])} chunks)")
+    existing_ids = vector_store.get_ids_for_source(path.name)
+    if existing_ids:
+        print(f"  Skipping {path.name} — already ingested ({len(existing_ids)} chunks)")
         return
 
     print(f"Ingesting: {path.name}")
     text = read_file(path)
     chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
-    embeddings = embedding_model.embed(chunks)
 
     ids = [str(uuid.uuid4()) for _ in chunks]
     metadatas = [{"source": path.name, "chunk": i} for i in range(len(chunks))]
 
-    vector_store.add_documents(chunks, embeddings, ids, metadatas)
+    vector_store.add_texts(chunks, metadatas=metadatas, ids=ids)
     print(f"  Added {len(chunks)} chunks from {path.name}")
-
-
-def clear_store(vector_store: VectorStore) -> None:
-    """Delete all chunks from the vector store."""
-    ids = vector_store.collection.get()["ids"]
-    if ids:
-        vector_store.collection.delete(ids=ids)
-    print(f"Cleared {len(ids)} chunks.")
 
 
 def main() -> None:
@@ -95,15 +84,14 @@ def main() -> None:
     vector_store = VectorStore()
 
     if args.clear:
-        clear_store(vector_store)
+        vector_store.delete_all()
+        print("Cleared all chunks.")
 
     if args.files:
-        print("Loading embedding model...")
-        embedding_model = EmbeddingModel()
         for filepath in args.files:
             path = Path(filepath)
             if path.exists():
-                ingest_file(filepath, embedding_model, vector_store,
+                ingest_file(filepath, vector_store,
                             chunk_size=args.chunk_size, overlap=args.overlap)
             else:
                 print(f"File not found: {filepath}")

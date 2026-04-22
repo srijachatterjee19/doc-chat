@@ -2,7 +2,6 @@
 """Interactive RAG chatbot CLI."""
 from dotenv import load_dotenv
 
-from src.embeddings import EmbeddingModel
 from src.rag import RAGChatbot
 from src.vector_store import VectorStore
 
@@ -11,8 +10,6 @@ load_dotenv()
 
 def main() -> None:
     """Run the interactive CLI chatbot loop."""
-    print("Loading embedding model...")
-    embedding_model = EmbeddingModel()
     vector_store = VectorStore()
 
     doc_count = vector_store.count()
@@ -24,7 +21,7 @@ def main() -> None:
     else:
         print(f"Vector store ready with {doc_count} document chunks.")
 
-    chatbot = RAGChatbot(embedding_model, vector_store)
+    chatbot = RAGChatbot(vector_store)
 
     print("\nRAG Chatbot ready! Commands: 'quit' to exit, 'reset' to clear history.")
     print("-" * 50)

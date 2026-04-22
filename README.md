@@ -2,7 +2,7 @@
 
 A local RAG (Retrieval-Augmented Generation) chatbot that answers questions about your documents. Fully local — no API keys required.
 
-**Stack:** Ollama · ChromaDB · FastAPI · React/Vite
+**Stack:** Ollama · LangChain · ChromaDB · FastAPI · React/Vite
 
 ---
 
@@ -56,7 +56,7 @@ python ingest.py --clear data/sample.txt
 python ingest.py --chunk-size 400 --overlap 50 paper.pdf
 ```
 
-Documents are split into overlapping word-count chunks, embedded with `nomic-embed-text`, and stored in `./chroma_db`. Files already in the store are skipped automatically (matched by filename).
+Documents are split into overlapping word-count chunks, embedded with `nomic-embed-text` via LangChain, and stored in `./chroma_db`. Files already in the store are skipped automatically (matched by filename).
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -110,7 +110,6 @@ Commands: `reset` to clear history, `quit` to exit.
 ```
 rag-chatbot/
 ├── api.py            # FastAPI backend (streaming SSE, /api/* routes)
-├── app.py            # Streamlit UI (alternative to React frontend)
 ├── chatbot.py        # Interactive CLI
 ├── ingest.py         # Document ingestion script
 ├── requirements.txt
@@ -121,12 +120,22 @@ rag-chatbot/
 │   ├── vite.config.js
 │   └── package.json
 ├── src/
-│   ├── embeddings.py  # Ollama embedding wrapper
-│   ├── rag.py         # RAGChatbot — retrieval + streaming chat
-│   └── vector_store.py # ChromaDB wrapper
+│   ├── history.py     # SQLite-backed chat history
+│   ├── rag.py         # RAGChatbot — retrieval + streaming chat (ChatOllama)
+│   └── vector_store.py # LangChain Chroma wrapper (embeddings handled internally)
 └── data/
     └── sample.txt     # Sample knowledge base
 ```
+
+---
+
+## How it works
+
+1. **Ingest** — documents are chunked and embedded with `nomic-embed-text`; vectors are stored in ChromaDB
+2. **Query rewriting** — vague follow-up questions are rewritten into standalone search queries using recent conversation history
+3. **Retrieval** — the rewritten query is used to find the top-k most relevant chunks via cosine similarity
+4. **Augmentation** — retrieved chunks are injected into the prompt as context
+5. **Generation** — the LLM streams a response grounded in the retrieved context
 
 ---
 
@@ -152,7 +161,10 @@ Without query rewriting, turns 2, 3, and 5 would search ChromaDB with phrases li
 |--------|----------|-------------|
 | `GET` | `/api/status` | Number of ingested document chunks |
 | `GET` | `/api/models` | Available Ollama chat models |
+| `GET` | `/api/history` | Full conversation history |
 | `POST` | `/api/chat` | Stream a chat response (SSE) |
 | `POST` | `/api/reset` | Clear conversation history |
+| `POST` | `/api/upload` | Upload and ingest a document (`.txt`, `.md`, `.pdf`, max 10 MB) |
+| `POST` | `/api/history/rollback` | Remove an orphaned user turn with no assistant reply |
 
-Interactive docs available at [http://localhost:8000/docs](http://localhost:8000/docs) when the server is running.
+Interactive docs: [http://localhost:8000/docs](http://localhost:8000/docs)

@@ -1,49 +1,53 @@
-import chromadb
+from langchain_chroma import Chroma
+from langchain_ollama import OllamaEmbeddings
 
 
 class VectorStore:
-    """Persistent ChromaDB collection for storing and querying document embeddings."""
+    """ChromaDB-backed vector store using LangChain's Chroma integration."""
 
     def __init__(
         self,
         persist_directory: str = "./chroma_db",
         collection_name: str = "documents",
+        embedding_model: str = "nomic-embed-text",
     ):
-        self.client = chromadb.PersistentClient(path=persist_directory)
-        self.collection = self.client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"},
+        self._store = Chroma(
+            persist_directory=persist_directory,
+            collection_name=collection_name,
+            embedding_function=OllamaEmbeddings(model=embedding_model),
+            collection_metadata={"hnsw:space": "cosine"},
         )
 
-    def add_documents(
+    def add_texts(
         self,
-        documents: list[str],
-        embeddings: list[list[float]],
-        ids: list[str],
+        texts: list[str],
         metadatas: list[dict] | None = None,
+        ids: list[str] | None = None,
     ) -> None:
-        """Insert documents with their pre-computed embeddings into the collection."""
-        self.collection.add(
-            documents=documents,
-            embeddings=embeddings,
-            ids=ids,
-            metadatas=metadatas or [{}] * len(documents),
-        )
+        """Embed and insert texts into the collection."""
+        self._store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
 
-    def query(self, query_embedding: list[float], n_results: int = 3) -> list[str]:
-        """Return the top-n most similar document chunks for the given embedding."""
+    def similarity_search(self, query: str, k: int = 3) -> list[str]:
+        """Return the top-k most similar document chunks for the query."""
         try:
-            count = self.collection.count()
-            if count == 0:
+            if self.count() == 0:
                 return []
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=min(n_results, count),
-            )
-            return results["documents"][0] if results["documents"] else []
+            docs = self._store.similarity_search(query, k=min(k, self.count()))
+            return [doc.page_content for doc in docs]
         except Exception:
             return []
 
+    def get_ids_for_source(self, source_name: str) -> list[str]:
+        """Return all chunk IDs stored under a given source filename."""
+        result = self._store._collection.get(where={"source": {"$eq": source_name}})
+        return result["ids"]
+
+    def delete_all(self) -> None:
+        """Delete every chunk from the collection."""
+        ids = self._store._collection.get()["ids"]
+        if ids:
+            self._store._collection.delete(ids=ids)
+
     def count(self) -> int:
-        """Return the total number of stored document chunks."""
-        return self.collection.count()
+        """Return the total number of stored chunks."""
+        return self._store._collection.count()
