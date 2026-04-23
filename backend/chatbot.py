@@ -2,8 +2,8 @@
 """Interactive RAG chatbot CLI."""
 from dotenv import load_dotenv
 
-from src.rag import RAGChatbot
-from src.vector_store import VectorStore
+from .src.rag import RAGChatbot
+from .src.vector_store import VectorStore
 
 load_dotenv()
 

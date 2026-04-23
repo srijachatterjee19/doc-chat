@@ -1,5 +1,8 @@
+from collections import OrderedDict
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
+
+_SEARCH_CACHE_MAXSIZE = 128
 
 
 class VectorStore:
@@ -17,6 +20,7 @@ class VectorStore:
             embedding_function=OllamaEmbeddings(model=embedding_model),
             collection_metadata={"hnsw:space": "cosine"},
         )
+        self._search_cache: OrderedDict[tuple, list[str]] = OrderedDict()
 
     def add_texts(
         self,
@@ -26,16 +30,25 @@ class VectorStore:
     ) -> None:
         """Embed and insert texts into the collection."""
         self._store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+        self._search_cache.clear()
 
     def similarity_search(self, query: str, k: int = 3) -> list[str]:
         """Return the top-k most similar document chunks for the query."""
+        key = (query, k)
+        if key in self._search_cache:
+            self._search_cache.move_to_end(key)
+            return self._search_cache[key]
         try:
             if self.count() == 0:
                 return []
             docs = self._store.similarity_search(query, k=min(k, self.count()))
-            return [doc.page_content for doc in docs]
+            result = [doc.page_content for doc in docs]
         except Exception:
             return []
+        self._search_cache[key] = result
+        if len(self._search_cache) > _SEARCH_CACHE_MAXSIZE:
+            self._search_cache.popitem(last=False)
+        return result
 
     def get_ids_for_source(self, source_name: str) -> list[str]:
         """Return all chunk IDs stored under a given source filename."""
@@ -47,6 +60,7 @@ class VectorStore:
         ids = self._store._collection.get()["ids"]
         if ids:
             self._store._collection.delete(ids=ids)
+        self._search_cache.clear()
 
     def list_sources(self) -> list[dict]:
         """Return each ingested source file with its chunk count."""

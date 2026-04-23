@@ -15,11 +15,12 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from ingest import ingest_file
-from src.rag import RAGChatbot
-from src.vector_store import VectorStore
+from .ingest import ingest_file
+from .src.rag import RAGChatbot
+from .src.vector_store import VectorStore
 
 load_dotenv()
+
 
 # --- Structured JSON logging ---
 
@@ -102,6 +103,7 @@ async def track_requests(request: Request, call_next):
 class ChatRequest(BaseModel):
     message: str
     model: str = "llama3.2"
+    rewrite_query: bool = True
 
 
 def _get_chat_models() -> list[str]:
@@ -152,7 +154,7 @@ def chat(request: ChatRequest):
         full_response = ""
         stream_start = time.perf_counter()
         first_token_ms: float | None = None
-        for chunk in _chatbot.stream(request.message):
+        for chunk in _chatbot.stream(request.message, rewrite_query=request.rewrite_query):
             if first_token_ms is None:
                 first_token_ms = round((time.perf_counter() - stream_start) * 1000, 1)
             full_response += chunk
@@ -220,7 +222,13 @@ async def upload(file: UploadFile = File(...)):
     return {"ok": True, "doc_count": doc_count}
 
 
+@app.post("/api/payments/subscribe")
+def sandbox_subscribe():
+    """Sandbox: instantly grant Pro tier without a real payment."""
+    return {"tier": "pro"}
+
+
 # Serve the production React build when it exists
-_static_dir = Path(__file__).parent / "frontend" / "dist"
+_static_dir = Path(__file__).parent.parent / "frontend" / "dist"
 if _static_dir.exists():
     app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="static")

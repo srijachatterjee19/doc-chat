@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Streamlit web UI for the RAG chatbot."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
 import ollama
 import streamlit as st
 from dotenv import load_dotenv
 
-from src.embeddings import EmbeddingModel
 from src.rag import RAGChatbot
 from src.vector_store import VectorStore
 
@@ -15,9 +19,8 @@ st.title("🤖 RAG Chatbot")
 
 
 @st.cache_resource
-def load_base() -> tuple[EmbeddingModel, VectorStore]:
-    """Initialise and cache the embedding model and vector store across reruns."""
-    return EmbeddingModel(), VectorStore()
+def load_vector_store() -> VectorStore:
+    return VectorStore()
 
 
 def get_chat_models() -> list[str]:
@@ -26,7 +29,6 @@ def get_chat_models() -> list[str]:
         models = []
         for m in ollama.list().models:
             families = m.details.families or []
-            # Embedding models report bert/nomic-bert in families
             if not any("bert" in f for f in families):
                 models.append(m.model)
         return models or ["llama3.2"]
@@ -34,12 +36,12 @@ def get_chat_models() -> list[str]:
         return ["llama3.2"]
 
 
-embedding_model, vector_store = load_base()
+vector_store = load_vector_store()
 
 doc_count = vector_store.count()
 if doc_count == 0:
     st.warning(
-        "No documents ingested yet. Run `python ingest.py data/sample.txt` to load documents.",
+        "No documents ingested yet. Run `python -m backend.ingest data/sample.txt` to load documents.",
         icon="⚠️",
     )
 else:
@@ -49,7 +51,7 @@ else:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "chatbot" not in st.session_state:
-    st.session_state.chatbot = RAGChatbot(embedding_model, vector_store)
+    st.session_state.chatbot = RAGChatbot(vector_store)
 
 # Sidebar controls
 with st.sidebar:
@@ -59,7 +61,7 @@ with st.sidebar:
     selected_model = st.selectbox("Ollama model", available_models)
 
     if selected_model != st.session_state.chatbot.model:
-        st.session_state.chatbot = RAGChatbot(embedding_model, vector_store, model=selected_model)
+        st.session_state.chatbot = RAGChatbot(vector_store, model=selected_model)
         st.session_state.messages = []
 
     st.markdown("---")

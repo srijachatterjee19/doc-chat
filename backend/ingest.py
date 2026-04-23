@@ -17,7 +17,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from src.vector_store import VectorStore
+from .src.vector_store import VectorStore
 
 load_dotenv()
 

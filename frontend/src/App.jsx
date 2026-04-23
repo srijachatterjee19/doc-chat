@@ -1,4 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import ReactGA from 'react-ga4'
+import Sidebar from './components/Sidebar'
+import ChatHeader from './components/ChatHeader'
+import MessageList from './components/MessageList'
+import InputArea from './components/InputArea'
+import LoginPage from './components/LoginPage'
+import SignupPage from './components/SignupPage'
+import PricingPage from './components/PricingPage'
+import LandingPage from './components/LandingPage'
 
 function getInitialTheme() {
   const stored = localStorage.getItem('theme')
@@ -6,7 +16,16 @@ function getInitialTheme() {
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
 }
 
-export default function App() {
+function isLoggedIn() {
+  return !!localStorage.getItem('loggedIn')
+}
+
+function ProtectedRoute({ children }) {
+  return isLoggedIn() ? children : <Navigate to="/login" replace />
+}
+
+function ChatApp() {
+  const navigate = useNavigate()
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [models, setModels] = useState([])
@@ -14,12 +33,9 @@ export default function App() {
   const [docCount, setDocCount] = useState(0)
   const [documents, setDocuments] = useState([])
   const [streaming, setStreaming] = useState(false)
-  const [showMenu, setShowMenu] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [interrupted, setInterrupted] = useState(false)
   const [theme, setTheme] = useState(getInitialTheme)
-  const bottomRef = useRef(null)
-  const menuRef = useRef(null)
   const fileInputRef = useRef(null)
 
   useEffect(() => {
@@ -53,49 +69,30 @@ export default function App() {
       })
   }, [])
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
-  useEffect(() => {
-    function handleClickOutside(e) {
-      if (menuRef.current && !menuRef.current.contains(e.target)) {
-        setShowMenu(false)
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
-
   async function sendMessage() {
     if (!input.trim() || streaming) return
-
     const userMsg = input.trim()
+    ReactGA.event('send_message', { model: selectedModel })
     setInput('')
     setInterrupted(false)
     setMessages(prev => [...prev, { role: 'user', content: userMsg }])
     setStreaming(true)
     setMessages(prev => [...prev, { role: 'assistant', content: '' }])
-
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: userMsg, model: selectedModel }),
       })
-
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
-
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
         buffer = lines.pop() ?? ''
-
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue
           const data = line.slice(6).trim()
@@ -121,10 +118,11 @@ export default function App() {
   async function clearConversation() {
     await fetch('/api/reset', { method: 'POST' })
     setMessages([])
-    setShowMenu(false)
+    ReactGA.event('clear_conversation')
   }
 
   function handleModelChange(model) {
+    ReactGA.event('model_change', { model })
     setSelectedModel(model)
     clearConversation()
   }
@@ -143,137 +141,77 @@ export default function App() {
         alert(err.detail ?? 'Upload failed.')
         return
       }
+      ReactGA.event('upload_document', { file_type: file.type })
       await refreshDocuments()
     } finally {
       setUploading(false)
     }
   }
 
+  function handleLogout() {
+    localStorage.removeItem('loggedIn')
+    ReactGA.event('logout')
+    navigate('/login')
+  }
+
   return (
     <div className="app">
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <span className="sidebar-title">Documents</span>
-          <button
-            className="upload-btn"
-            onClick={() => fileInputRef.current.click()}
-            disabled={uploading}
-            title="Upload document"
-          >
-            {uploading ? '…' : '+'}
-          </button>
-        </div>
-
-        <div className="sidebar-docs">
-          {documents.length === 0 ? (
-            <p className="sidebar-empty">No documents yet</p>
-          ) : (
-            documents.map(doc => (
-              <div
-                key={doc.name}
-                className="doc-item"
-                onClick={() => setInput(`What is ${doc.name} about?`)}
-                title={`Ask about ${doc.name}`}
-              >
-                <span className="doc-icon">⬡</span>
-                <span className="doc-name">{doc.name}</span>
-                <span className="doc-chunks">{doc.chunks}</span>
-              </div>
-            ))
-          )}
-        </div>
-
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".txt,.md,.pdf"
-          style={{ display: 'none' }}
-          onChange={handleUpload}
-        />
-      </aside>
-
+      <Sidebar
+        documents={documents}
+        uploading={uploading}
+        fileInputRef={fileInputRef}
+        onUpload={handleUpload}
+        onDocClick={name => setInput(`What is ${name} about?`)}
+      />
       <main className="chat">
-        <div className="chat-header">
-          {docCount === 0 ? (
-            <span className="header-warning">
-              No documents loaded — run: <code>python ingest.py data/sample.txt</code>
-            </span>
-          ) : (
-            <span className="header-doc-count">{docCount} chunks across {documents.length} file{documents.length !== 1 ? 's' : ''}</span>
-          )}
-
-          <div className="header-actions">
-            <button
-              className="theme-btn"
-              onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-              title="Toggle light/dark mode"
-            >
-              {theme === 'dark' ? '☀' : '☾'}
-            </button>
-
-            <div className="menu-container" ref={menuRef}>
-              <button className="menu-btn" onClick={() => setShowMenu(v => !v)}>
-                •••
-              </button>
-              {showMenu && (
-                <div className="dropdown">
-                  <button className="dropdown-item" onClick={clearConversation}>
-                    Clear conversation
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="messages">
-          {messages.length === 0 && (
-            <div className="empty-state">Ask a question about your documents</div>
-          )}
-          {messages.map((msg, i) => (
-            <div key={i} className={`message ${msg.role}`}>
-              <div className="bubble">
-                {msg.content || (streaming && i === messages.length - 1 ? '…' : '')}
-              </div>
-            </div>
-          ))}
-          <div ref={bottomRef} />
-        </div>
-
-        {interrupted && (
-          <div className="interrupted-notice">
-            Sorry, your last message was interrupted. Please try again.
-          </div>
-        )}
-
-        <div className="input-area">
-          <select
-            className="model-select"
-            value={selectedModel}
-            onChange={e => handleModelChange(e.target.value)}
-            disabled={streaming}
-          >
-            {models.map(m => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-          <input
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendMessage()}
-            placeholder="Ask a question about your documents..."
-            disabled={streaming}
-            autoFocus
-          />
-          <button
-            className="send-btn"
-            onClick={sendMessage}
-            disabled={streaming || !input.trim()}
-          >
-            {streaming ? 'Sending…' : 'Send'}
-          </button>
-        </div>
+        <ChatHeader
+          docCount={docCount}
+          documents={documents}
+          theme={theme}
+          onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+          onClearConversation={clearConversation}
+          onLogout={handleLogout}
+          onGoToPricing={() => navigate('/pricing')}
+        />
+        <MessageList messages={messages} streaming={streaming} interrupted={interrupted} />
+        <InputArea
+          input={input}
+          models={models}
+          selectedModel={selectedModel}
+          streaming={streaming}
+          onInputChange={setInput}
+          onModelChange={handleModelChange}
+          onSend={sendMessage}
+        />
       </main>
     </div>
+  )
+}
+
+function LoginWrapper() {
+  const navigate = useNavigate()
+  function handleLogin() {
+    localStorage.setItem('loggedIn', '1')
+    ReactGA.event('login')
+    navigate('/chat')
+  }
+  return <LoginPage onLogin={handleLogin} onGoToSignup={() => navigate('/signup')} />
+}
+
+function SignupWrapper() {
+  const navigate = useNavigate()
+  return <SignupPage onGoToLogin={() => navigate('/login')} />
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<LandingPage />} />
+      <Route path="/login" element={<LoginWrapper />} />
+      <Route path="/signup" element={<SignupWrapper />} />
+      <Route path="/chat" element={<ProtectedRoute><ChatApp /></ProtectedRoute>} />
+      <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   )
 }

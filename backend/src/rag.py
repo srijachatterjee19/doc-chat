@@ -85,11 +85,11 @@ class RAGChatbot:
         messages.append(HumanMessage(content=augmented_message))
         return messages
 
-    def stream(self, user_message: str) -> Generator[str, None, None]:
+    def stream(self, user_message: str, rewrite_query: bool = True) -> Generator[str, None, None]:
         """Yield response tokens. Caller must call commit() after exhausting this generator."""
         self._db.append("user", user_message)
 
-        retrieval_query = self._rewrite_query(user_message)
+        retrieval_query = self._rewrite_query(user_message) if rewrite_query else user_message
         context, related = self._retrieve_context(retrieval_query)
 
         if context and related:

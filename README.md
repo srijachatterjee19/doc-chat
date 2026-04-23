@@ -1,8 +1,8 @@
-# RAG Chatbot
+# DocChat
 
-A local RAG (Retrieval-Augmented Generation) chatbot that answers questions about your documents. Fully local — no API keys required.
+A RAG (Retrieval-Augmented Generation) chatbot that answers questions about your documents.
 
-**Stack:** Ollama · LangChain · ChromaDB · FastAPI · React/Vite
+**Stack:** Ollama · LangChain · ChromaDB · FastAPI · React/Vite · Razorpay
 
 ---
 
@@ -35,6 +35,22 @@ pip install -r requirements.txt
 cd frontend && npm install
 ```
 
+**Environment variables:**
+
+Copy `.env.example` to `.env` and fill in the values:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `RAZORPAY_KEY_ID` | Payments | Razorpay key ID (`rzp_test_...`) |
+| `RAZORPAY_KEY_SECRET` | Payments | Razorpay key secret |
+| `LANGCHAIN_API_KEY` | Optional | LangSmith tracing |
+| `VITE_GA_MEASUREMENT_ID` | Optional | Google Analytics 4 (in `frontend/.env`) |
+
 ---
 
 ## Ingest documents
@@ -43,17 +59,17 @@ Supported formats: `.txt`, `.md`, `.pdf`
 
 ```bash
 # ingest one or more files
-python ingest.py data/sample.txt
-python ingest.py file1.txt file2.pdf
+python -m backend.ingest data/sample.txt
+python -m backend.ingest file1.txt file2.pdf
 
 # clear all stored chunks
-python ingest.py --clear
+python -m backend.ingest --clear
 
 # clear then re-ingest
-python ingest.py --clear data/sample.txt
+python -m backend.ingest --clear data/sample.txt
 
 # custom chunk size and overlap
-python ingest.py --chunk-size 400 --overlap 50 paper.pdf
+python -m backend.ingest --chunk-size 400 --overlap 50 paper.pdf
 ```
 
 Documents are split into overlapping word-count chunks, embedded with `nomic-embed-text` via LangChain, and stored in `./chroma_db`. Files already in the store are skipped automatically (matched by filename).
@@ -71,7 +87,7 @@ Documents are split into overlapping word-count chunks, embedded with `nomic-emb
 **Terminal 1 — API server:**
 
 ```bash
-uvicorn api:app --reload
+uvicorn backend.api:app --reload
 ```
 
 **Terminal 2 — React dev server:**
@@ -88,7 +104,7 @@ The Vite dev server proxies all `/api/*` requests to the FastAPI backend at `loc
 
 ```bash
 cd frontend && npm run build
-uvicorn api:app
+uvicorn backend.api:app
 ```
 
 FastAPI serves the built React app from `frontend/dist/` at [http://localhost:8000](http://localhost:8000).
@@ -98,7 +114,7 @@ FastAPI serves the built React app from `frontend/dist/` at [http://localhost:80
 ## CLI (no UI)
 
 ```bash
-python chatbot.py
+python -m backend.chatbot
 ```
 
 Commands: `reset` to clear history, `quit` to exit.
@@ -109,22 +125,34 @@ Commands: `reset` to clear history, `quit` to exit.
 
 ```
 rag-chatbot/
-├── api.py            # FastAPI backend (streaming SSE, /api/* routes)
-├── chatbot.py        # Interactive CLI
-├── ingest.py         # Document ingestion script
-├── requirements.txt
-├── frontend/         # React + Vite UI
+├── backend/
+│   ├── api.py            # FastAPI server (streaming SSE, /api/* routes)
+│   ├── chatbot.py        # Interactive CLI
+│   ├── ingest.py         # Document ingestion script
+│   ├── app.py            # Legacy Streamlit UI
+│   └── src/
+│       ├── history.py     # JSON file-backed chat history
+│       ├── rag.py         # RAGChatbot — retrieval + streaming chat
+│       ├── vector_store.py # LangChain Chroma wrapper
+│       └── embeddings.py  # Ollama embedding model wrapper
+├── frontend/             # React + Vite UI
 │   ├── src/
 │   │   ├── App.jsx
-│   │   └── App.css
+│   │   ├── main.jsx
+│   │   ├── App.css
+│   │   └── components/
+│   │       ├── Sidebar.jsx
+│   │       ├── ChatHeader.jsx
+│   │       ├── MessageList.jsx
+│   │       ├── InputArea.jsx
+│   │       ├── LoginPage.jsx
+│   │       ├── SignupPage.jsx
+│   │       └── PricingPage.jsx
 │   ├── vite.config.js
 │   └── package.json
-├── src/
-│   ├── history.py     # SQLite-backed chat history
-│   ├── rag.py         # RAGChatbot — retrieval + streaming chat (ChatOllama)
-│   └── vector_store.py # LangChain Chroma wrapper (embeddings handled internally)
-└── data/
-    └── sample.txt     # Sample knowledge base
+├── data/
+│   └── sample.txt        # Sample knowledge base
+└── requirements.txt
 ```
 
 ---
@@ -211,6 +239,24 @@ LANGCHAIN_PROJECT=rag-chatbot
 
 ---
 
+### In-process caching
+
+Two caches reduce repeated Ollama round-trips within a server session.
+
+**Embedding cache** (`src/embeddings.py`)
+
+`embed_single` is backed by a module-level `lru_cache(maxsize=512)` keyed on `(model, text)`. Embedding is deterministic — the same string always produces the same vector — so the result is stored after the first call and returned instantly on any repeat. This matters because the query rewriter can produce the same standalone query for multiple slightly different phrasings, and the same query text is embedded twice (once for rewriting, once for retrieval).
+
+**Similarity search cache** (`src/vector_store.py`)
+
+`similarity_search` uses an `OrderedDict`-backed LRU cache (`maxsize=128`) keyed on `(query, k)`. A cache hit skips both the embedding call and the ChromaDB nearest-neighbor scan. The cache is cleared on `add_texts` and `delete_all` so results never go stale after documents change.
+
+**What these don't cover**
+
+The LLM calls themselves — the query rewrite and the final streaming response — are not cached. Each message still incurs at least one LLM call before retrieval begins.
+
+---
+
 ### Similarity-grounded follow-up suggestions
 
 After answering, the app suggests follow-up questions the user might ask. Rather than letting the LLM invent suggestions from scratch (which produces generic or hallucinated questions), suggestions are grounded in the vector store.
@@ -253,5 +299,34 @@ Without query rewriting, turns 2, 3, and 5 would search ChromaDB with phrases li
 | `POST` | `/api/reset` | Clear conversation history |
 | `POST` | `/api/upload` | Upload and ingest a document (`.txt`, `.md`, `.pdf`, max 10 MB) |
 | `POST` | `/api/history/rollback` | Remove an orphaned user turn with no assistant reply |
+| `POST` | `/api/payments/create-order` | Create a Razorpay order for the Pro plan |
+| `POST` | `/api/payments/verify` | Verify Razorpay payment signature and return tier |
 
 Interactive docs: [http://localhost:8000/docs](http://localhost:8000/docs)
+
+---
+
+## Payments & plans
+
+DocChat uses [Razorpay](https://razorpay.com) for payments (UPI, cards, netbanking, wallets).
+
+| Plan | Price | Limits |
+|------|-------|--------|
+| Free | ₹0/mo | 10 messages/day · 2 documents |
+| Pro | ₹799/mo | Unlimited messages · Unlimited documents |
+
+### Razorpay setup
+
+1. Sign up at [dashboard.razorpay.com](https://dashboard.razorpay.com)
+2. Go to **Settings → API Keys** → generate a key pair
+3. Add `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` to `.env`
+
+Use `rzp_test_...` keys during development — no real money is charged.
+
+### User flow
+
+1. User clicks **Upgrade to Pro** in the `•••` menu
+2. Backend creates a Razorpay order and returns the order ID
+3. Razorpay checkout modal opens in the browser
+4. User pays → frontend calls `/api/payments/verify` to confirm the signature
+5. On success, `pro` is stored in `localStorage`
