@@ -17,18 +17,24 @@ export default function Sidebar({ documents, uploading, fileInputRef, onUpload, 
         {documents.length === 0 ? (
           <p className="sidebar-empty">No documents yet</p>
         ) : (
-          documents.map(doc => (
-            <div
-              key={doc.name}
-              className="doc-item"
-              onClick={() => onDocClick(doc.name)}
-              title={`Ask about ${doc.name}`}
-            >
-              <span className="doc-icon">⬡</span>
-              <span className="doc-name">{doc.name}</span>
-              <span className="doc-chunks">{doc.chunks}</span>
-            </div>
-          ))
+          documents.map(doc => {
+            const isPdf = doc.name.toLowerCase().endsWith('.pdf')
+            return (
+              <div
+                key={doc.name}
+                className="doc-item"
+                onClick={() => isPdf
+                  ? window.open(`/api/files/${encodeURIComponent(doc.name)}`, '_blank')
+                  : onDocClick(doc.name)
+                }
+                title={isPdf ? `View ${doc.name}` : `Ask about ${doc.name}`}
+              >
+                <span className="doc-icon">{isPdf ? '📄' : '⬡'}</span>
+                <span className="doc-name">{doc.name}</span>
+                <span className="doc-chunks">{doc.chunks}</span>
+              </div>
+            )
+          })
         )}
       </div>
 

@@ -193,7 +193,7 @@ def history_rollback():
     return {"ok": True}
 
 
-_UPLOADS_DIR = Path(__file__).parent / "uploads"
+_UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
 _MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
@@ -220,6 +220,17 @@ async def upload(file: UploadFile = File(...)):
         },
     )
     return {"ok": True, "doc_count": doc_count}
+
+
+@app.get("/api/files/{filename}")
+async def serve_file(filename: str):
+    """Serve an uploaded file by name."""
+    path = _UPLOADS_DIR / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    from fastapi.responses import FileResponse
+    media_type = "application/pdf" if filename.lower().endswith(".pdf") else "text/plain"
+    return FileResponse(path, media_type=media_type, headers={"Content-Disposition": "inline"})
 
 
 @app.post("/api/payments/subscribe")
