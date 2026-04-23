@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { motion } from 'motion/react'
 import { ArrowRight, Menu, X } from 'lucide-react'
 import Hls from 'hls.js'
+import { track } from '../analytics'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faBolt, faMagnifyingGlass, faFileLines, faLink, faComments, faMoon } from '@fortawesome/free-solid-svg-icons'
 
@@ -146,6 +147,7 @@ export default function LandingPage() {
 
   useEffect(() => {
     document.body.style.overflow = 'auto'
+    track('landing_view')
     return () => { document.body.style.overflow = '' }
   }, [])
 

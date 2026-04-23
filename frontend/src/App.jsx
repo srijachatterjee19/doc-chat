@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
-import ReactGA from 'react-ga4'
+import { track } from './analytics'
 import Sidebar from './components/Sidebar'
 import ChatHeader from './components/ChatHeader'
 import MessageList from './components/MessageList'
@@ -72,7 +72,7 @@ function ChatApp() {
   async function sendMessage() {
     if (!input.trim() || streaming) return
     const userMsg = input.trim()
-    ReactGA.event('send_message', { model: selectedModel })
+    track(messages.length === 0 ? 'first_message' : 'send_message', { model: selectedModel })
     setInput('')
     setInterrupted(false)
     setMessages(prev => [...prev, { role: 'user', content: userMsg }])
@@ -118,11 +118,11 @@ function ChatApp() {
   async function clearConversation() {
     await fetch('/api/reset', { method: 'POST' })
     setMessages([])
-    ReactGA.event('clear_conversation')
+    track('clear_conversation')
   }
 
   function handleModelChange(model) {
-    ReactGA.event('model_change', { model })
+    track('model_change', { model })
     setSelectedModel(model)
     clearConversation()
   }
@@ -141,7 +141,7 @@ function ChatApp() {
         alert(err.detail ?? 'Upload failed.')
         return
       }
-      ReactGA.event('upload_document', { file_type: file.type })
+      track('upload_document', { file_type: file.type })
       await refreshDocuments()
     } finally {
       setUploading(false)
@@ -150,7 +150,7 @@ function ChatApp() {
 
   function handleLogout() {
     localStorage.removeItem('loggedIn')
-    ReactGA.event('logout')
+    track('logout')
     navigate('/login')
   }
 
@@ -192,7 +192,7 @@ function LoginWrapper() {
   const navigate = useNavigate()
   function handleLogin() {
     localStorage.setItem('loggedIn', '1')
-    ReactGA.event('login')
+    track('login')
     navigate('/chat')
   }
   return <LoginPage onLogin={handleLogin} onGoToSignup={() => navigate('/signup')} />

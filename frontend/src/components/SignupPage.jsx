@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { track } from '../analytics'
 
 export default function SignupPage({ onGoToLogin }) {
   const [username, setUsername] = useState('')
@@ -7,11 +8,14 @@ export default function SignupPage({ onGoToLogin }) {
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState('')
 
+  useEffect(() => { track('signup_view') }, [])
+
   function handleSubmit(e) {
     e.preventDefault()
     if (!username.trim()) { setError('Username is required.'); return }
     if (password.length < 4) { setError('Password must be at least 4 characters.'); return }
     if (password !== confirm) { setError('Passwords do not match.'); return }
+    track('signup')
     setSubmitted(true)
   }
 

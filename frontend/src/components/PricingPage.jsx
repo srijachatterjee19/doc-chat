@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { track } from '../analytics'
 
 const FEATURES_FREE = [
   '10 messages per day',
@@ -88,9 +89,12 @@ export default function PricingPage() {
   const [showCheckout, setShowCheckout] = useState(false)
   const [justUpgraded, setJustUpgraded] = useState(false)
 
+  useEffect(() => { track('upgrade_viewed') }, [])
+
   async function handleConfirm() {
     await fetch('/api/payments/subscribe', { method: 'POST' })
     localStorage.setItem('subscriptionTier', 'pro')
+    track('upgrade_completed')
     setTier('pro')
     setJustUpgraded(true)
     setShowCheckout(false)

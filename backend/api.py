@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from .ingest import ingest_file
 from .src.rag import RAGChatbot
 from .src.vector_store import VectorStore
+from .src.analytics import init_db, log_event, get_dau, get_retention, get_funnel
 
 load_dotenv()
 
@@ -61,6 +62,7 @@ _chatbot: RAGChatbot
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global _vector_store, _chatbot
+    init_db()
     _vector_store = VectorStore()
     _chatbot = RAGChatbot(_vector_store)
     yield
@@ -231,6 +233,37 @@ async def serve_file(filename: str):
     from fastapi.responses import FileResponse
     media_type = "application/pdf" if filename.lower().endswith(".pdf") else "text/plain"
     return FileResponse(path, media_type=media_type, headers={"Content-Disposition": "inline"})
+
+
+class EventRequest(BaseModel):
+    event: str
+    user_id: str | None = None
+    properties: dict = {}
+
+
+@app.post("/api/metrics/event")
+def track_event(body: EventRequest):
+    """Log a frontend analytics event to the database."""
+    log_event(body.event, body.user_id, body.properties)
+    return {"ok": True}
+
+
+@app.get("/api/metrics/dau")
+def dau(days: int = 30):
+    """Daily active users for the last N days."""
+    return {"dau": get_dau(days)}
+
+
+@app.get("/api/metrics/retention")
+def retention(days: int = 30):
+    """Day-7 retention by cohort for the last N days."""
+    return {"retention": get_retention(days)}
+
+
+@app.get("/api/metrics/funnel")
+def funnel():
+    """Conversion funnel: landing → signup → login → first_message → upgrade."""
+    return {"funnel": get_funnel()}
 
 
 @app.post("/api/payments/subscribe")
