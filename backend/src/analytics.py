@@ -13,7 +13,11 @@ def _conn():
 def init_db():
     if not _DATABASE_URL:
         return
-    with _conn() as conn, conn.cursor() as cur:
+    try:
+        conn_ctx = _conn()
+    except psycopg2.OperationalError:
+        return
+    with conn_ctx as conn, conn.cursor() as cur:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS events (
                 id        SERIAL PRIMARY KEY,

@@ -35,6 +35,7 @@ function ChatApp() {
   const [streaming, setStreaming] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [interrupted, setInterrupted] = useState(false)
+  const [agentUpdates, setAgentUpdates] = useState([])
   const [theme, setTheme] = useState(getInitialTheme)
   const fileInputRef = useRef(null)
 
@@ -75,6 +76,7 @@ function ChatApp() {
     track(messages.length === 0 ? 'first_message' : 'send_message', { model: selectedModel })
     setInput('')
     setInterrupted(false)
+    setAgentUpdates([])
     setMessages(prev => [...prev, { role: 'user', content: userMsg }])
     setStreaming(true)
     setMessages(prev => [...prev, { role: 'assistant', content: '' }])
@@ -98,13 +100,25 @@ function ChatApp() {
           const data = line.slice(6).trim()
           if (data === '[DONE]') break
           try {
-            const { text } = JSON.parse(data)
-            setMessages(prev => {
-              const msgs = [...prev]
-              const last = msgs[msgs.length - 1]
-              msgs[msgs.length - 1] = { ...last, content: last.content + text }
-              return msgs
-            })
+            const parsed = JSON.parse(data)
+            if (parsed.type === 'agent_update') {
+              setAgentUpdates(prev => {
+                const idx = prev.findIndex(u => u.agent === parsed.agent)
+                if (idx >= 0) {
+                  const next = [...prev]
+                  next[idx] = parsed
+                  return next
+                }
+                return [...prev, parsed]
+              })
+            } else if (parsed.text) {
+              setMessages(prev => {
+                const msgs = [...prev]
+                const last = msgs[msgs.length - 1]
+                msgs[msgs.length - 1] = { ...last, content: last.content + parsed.text }
+                return msgs
+              })
+            }
           } catch {
             // malformed SSE chunk — skip
           }
@@ -173,7 +187,7 @@ function ChatApp() {
           onLogout={handleLogout}
           onGoToPricing={() => navigate('/pricing')}
         />
-        <MessageList messages={messages} streaming={streaming} interrupted={interrupted} />
+        <MessageList messages={messages} streaming={streaming} interrupted={interrupted} agentUpdates={agentUpdates} />
         <InputArea
           input={input}
           models={models}

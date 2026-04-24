@@ -157,10 +157,21 @@ def chat(request: ChatRequest):
         stream_start = time.perf_counter()
         first_token_ms: float | None = None
         for chunk in _chatbot.stream(request.message, rewrite_query=request.rewrite_query):
-            if first_token_ms is None:
-                first_token_ms = round((time.perf_counter() - stream_start) * 1000, 1)
-            full_response += chunk
-            yield f"data: {json.dumps({'text': chunk})}\n\n"
+            if isinstance(chunk, dict):
+                chunk_type = chunk.get("type")
+                if chunk_type == "agent_update":
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                elif chunk_type == "text":
+                    if first_token_ms is None:
+                        first_token_ms = round((time.perf_counter() - stream_start) * 1000, 1)
+                    full_response += chunk["text"]
+                    yield f"data: {json.dumps({'text': chunk['text']})}\n\n"
+            else:
+                # Ollama fallback yields raw strings
+                if first_token_ms is None:
+                    first_token_ms = round((time.perf_counter() - stream_start) * 1000, 1)
+                full_response += chunk
+                yield f"data: {json.dumps({'text': chunk})}\n\n"
         if full_response:
             _chatbot.commit(request.message, full_response)
             logger.info(

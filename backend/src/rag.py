@@ -1,3 +1,6 @@
+import os
+import queue
+import threading
 from collections.abc import Generator
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -22,6 +25,23 @@ After every answer, add a new line followed by:
 
 Base the suggestions strictly on the "Related sections" provided in the message — they are document chunks semantically similar to the question. Each suggestion should be a natural question a user could ask about one of those related sections."""
 
+_CHUNK_SIZE = 20
+
+
+def _stream_text(text: str) -> Generator[dict, None, None]:
+    """Yield text in word-chunks as SSE-compatible dicts."""
+    words = text.split()
+    for i in range(0, len(words), _CHUNK_SIZE):
+        yield {"type": "text", "text": " ".join(words[i : i + _CHUNK_SIZE]) + " "}
+
+
+def _humanize_summary(text: str, max_chars: int = 120) -> str:
+    """Truncate raw agent output to a short human-readable summary."""
+    text = text.strip().replace("\n", " ")
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rsplit(" ", 1)[0] + "…"
+
 
 class RAGChatbot:
     """Multi-turn chatbot that grounds responses in retrieved document context."""
@@ -43,10 +63,8 @@ class RAGChatbot:
         self._llm = ChatOllama(model=value)
 
     def _rewrite_query(self, user_message: str) -> str:
-        """Rewrite the user message as a standalone search query using recent history."""
         if not self.history:
             return user_message
-
         history_text = "\n".join(
             f"{m['role'].capitalize()}: {m['content']}" for m in self.history[-6:]
         )
@@ -61,10 +79,6 @@ class RAGChatbot:
         return response.content.strip()
 
     def _retrieve_context(self, query: str, n_results: int = 3) -> tuple[str, str]:
-        """Return (answer_context, suggestion_context).
-
-        Fetches 2×n_results chunks: top-n for answering, next-n as suggestion seeds.
-        """
         docs = self.vector_store.similarity_search(query, k=n_results * 2)
         if not docs:
             return "", ""
@@ -75,7 +89,6 @@ class RAGChatbot:
         return answer_ctx, suggest_ctx
 
     def _build_messages(self, augmented_message: str) -> list:
-        """Convert stored history dicts + new message into LangChain message objects."""
         messages = [SystemMessage(content=SYSTEM_PROMPT)]
         for m in self.history:
             if m["role"] == "user":
@@ -85,13 +98,141 @@ class RAGChatbot:
         messages.append(HumanMessage(content=augmented_message))
         return messages
 
-    def stream(self, user_message: str, rewrite_query: bool = True) -> Generator[str, None, None]:
-        """Yield response tokens. Caller must call commit() after exhausting this generator."""
+    def _run_crew(self, query: str, doc_context: str, update_queue: queue.Queue) -> str:
+        """Run 3 CrewAI agents and push live status updates into update_queue.
+
+        Returns the final synthesized response string.
+        Falls back to empty string if crewai is unavailable.
+        """
+        try:
+            from crewai import Agent, Crew, LLM, Process, Task
+            from crewai_tools import SerperDevTool
+        except ImportError:
+            return ""
+
+        llm = LLM(model="gpt-4o-mini", max_tokens=1500)
+
+        # Emit initial states before crew starts
+        update_queue.put({"type": "agent_update", "agent": "Document Analyst", "icon": "📄", "summary": "Reading your documents…", "status": "working"})
+        update_queue.put({"type": "agent_update", "agent": "Web Researcher",    "icon": "🌐", "summary": "Standing by…",           "status": "pending"})
+        update_queue.put({"type": "agent_update", "agent": "Synthesizer",       "icon": "🔀", "summary": "Waiting for results…",   "status": "pending"})
+
+        def on_doc_done(output):
+            summary = _humanize_summary(output.raw) if output.raw else "Finished reading documents."
+            update_queue.put({"type": "agent_update", "agent": "Document Analyst", "icon": "📄", "summary": summary,               "status": "done"})
+            update_queue.put({"type": "agent_update", "agent": "Web Researcher",   "icon": "🌐", "summary": "Searching the web…",  "status": "working"})
+
+        def on_web_done(output):
+            summary = _humanize_summary(output.raw) if output.raw else "Web search complete."
+            update_queue.put({"type": "agent_update", "agent": "Web Researcher", "icon": "🌐", "summary": summary,              "status": "done"})
+            update_queue.put({"type": "agent_update", "agent": "Synthesizer",    "icon": "🔀", "summary": "Combining results…", "status": "working"})
+
+        def on_synth_done(output):
+            update_queue.put({"type": "agent_update", "agent": "Synthesizer", "icon": "🔀", "summary": "Response ready.", "status": "done"})
+
+        doc_agent = Agent(
+            role="Document Analyst",
+            goal="Extract and summarize relevant information from provided document excerpts",
+            backstory="Expert at reading documents and identifying relevant passages. Never fabricates.",
+            verbose=False, allow_delegation=False, llm=llm,
+        )
+        web_agent = Agent(
+            role="Web Researcher",
+            goal="Find up-to-date information from the web to complement the document findings",
+            backstory="Expert at searching the web and noting source URLs for every fact reported.",
+            verbose=False, allow_delegation=False, llm=llm,
+            tools=[SerperDevTool()],
+        )
+        synth_agent = Agent(
+            role="Synthesizer",
+            goal="Produce a single well-structured answer that clearly attributes each piece of information",
+            backstory="Expert at combining research from multiple sources into a coherent, attributed answer.",
+            verbose=False, allow_delegation=False, llm=llm,
+        )
+
+        doc_task = Task(
+            description=(
+                f"Using ONLY the document excerpts below, answer: {query}\n\n"
+                f"Documents:\n{doc_context or 'No document context available.'}\n\n"
+                "State clearly if nothing relevant is found."
+            ),
+            agent=doc_agent,
+            callback=on_doc_done,
+            expected_output="A concise summary of what the documents say, or a statement that they don't cover the topic.",
+        )
+        web_task = Task(
+            description=(
+                f"Search the web for current information about: {query}\n"
+                "Find 2-3 reliable sources. Include the source URL for each finding."
+            ),
+            agent=web_agent,
+            callback=on_web_done,
+            expected_output="A summary of web findings with source URLs.",
+        )
+        synth_task = Task(
+            description=(
+                f"Write a complete answer to: {query}\n\n"
+                "Format your response exactly like this:\n\n"
+                "📄 **From your documents:**\n"
+                "<what the documents say, or that they don't cover this>\n\n"
+                "🌐 **From Google Search:**\n"
+                "<web findings with inline source URLs>\n\n"
+                "**Summary:**\n"
+                "<1-2 sentence combined answer>\n\n"
+                "**You might also ask:**\n"
+                "- <follow-up 1>\n- <follow-up 2>\n- <follow-up 3>"
+            ),
+            agent=synth_agent,
+            context=[doc_task, web_task],
+            callback=on_synth_done,
+            expected_output="A structured response with document and web sections clearly labelled.",
+        )
+
+        crew = Crew(
+            agents=[doc_agent, web_agent, synth_agent],
+            tasks=[doc_task, web_task, synth_task],
+            process=Process.sequential,
+            verbose=False,
+        )
+        result = crew.kickoff(inputs={"query": query})
+        return result.raw
+
+    def stream(self, user_message: str, rewrite_query: bool = True) -> Generator:
+        """Yield agent_update dicts then text dicts. Caller must call commit() after."""
         self._db.append("user", user_message)
 
         retrieval_query = self._rewrite_query(user_message) if rewrite_query else user_message
         context, related = self._retrieve_context(retrieval_query)
 
+        update_queue: queue.Queue = queue.Queue()
+        result_holder: list = [None, None]  # [response, error]
+
+        def run_crew():
+            try:
+                result_holder[0] = self._run_crew(retrieval_query, context, update_queue)
+            except Exception as e:
+                result_holder[1] = e
+            finally:
+                update_queue.put(None)  # sentinel
+
+        t = threading.Thread(target=run_crew, daemon=True)
+        t.start()
+
+        # Yield agent updates in real-time as crew works
+        while True:
+            item = update_queue.get()
+            if item is None:
+                break
+            yield item
+
+        t.join()
+
+        crew_response = result_holder[0]
+        if crew_response:
+            yield from _stream_text(crew_response)
+            return
+
+        # Fallback: original single-LLM path (if crewai unavailable)
         if context and related:
             augmented_message = (
                 f"Context:\n{context}\n\n"
@@ -107,12 +248,10 @@ class RAGChatbot:
             yield chunk.content
 
     def commit(self, user_message: str, assistant_response: str) -> None:
-        """Persist a completed exchange to memory and the database."""
         self.history.append({"role": "user", "content": user_message})
         self.history.append({"role": "assistant", "content": assistant_response})
         self._db.append("assistant", assistant_response)
 
     def reset(self) -> None:
-        """Clear conversation history from memory and the database."""
         self.history = []
         self._db.clear()
