@@ -1,4 +1,6 @@
 import { useRef, useEffect, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 function AgentCard({ agent, icon, summary, status }) {
   return (
@@ -50,7 +52,13 @@ export default function MessageList({ messages, streaming, interrupted, agentUpd
                 )}
                 <div className={`message ${msg.role}`}>
                   <div className="bubble">
-                    {msg.content || (streaming && isLastAssistant ? '…' : '')}
+                    {msg.role === 'assistant' ? (
+                      msg.content
+                        ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                        : streaming && isLastAssistant ? <span className="typing-dot">…</span> : ''
+                    ) : (
+                      msg.content
+                    )}
                   </div>
                 </div>
               </div>

@@ -257,6 +257,93 @@ The LLM calls themselves — the query rewrite and the final streaming response 
 
 ---
 
+### Multi-agent response pipeline
+
+Each chat message is handled by a three-agent CrewAI crew rather than a single LLM call. The agents run sequentially — each one's output becomes context for the next.
+
+```
+User message
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│  📄  Document Analyst                               │
+│  Tool: search_documents (wraps ChromaDB)            │
+│  Actively queries the vector store with multiple    │
+│  search terms. Reports what the documents contain,  │
+│  or states clearly that they don't cover the topic. │
+└────────────────────┬────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│  🌐  Web Researcher                                 │
+│  Tool: SerperDevTool (Google Search API)            │
+│  Finds 2–3 current web sources. Includes a source  │
+│  URL for every fact it reports.                     │
+└────────────────────┬────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│  🔀  Synthesizer                                    │
+│  No tools — reasoning only                         │
+│  Combines both outputs into a single response with  │
+│  explicit attribution (📄 vs 🌐) and a summary.    │
+└────────────────────┬────────────────────────────────┘
+                     │
+                     ▼
+              Streamed response
+```
+
+**Document Analyst uses a custom tool, not pre-retrieved chunks**
+
+Instead of passing pre-fetched document chunks as static text in the prompt, the Document Analyst is given a `search_documents` tool that wraps `VectorStore.similarity_search()`. The agent decides its own search terms and can call the tool multiple times with different queries, which handles multi-hop and multi-facet questions better than a single retrieval pass.
+
+```python
+@tool("Search Documents")
+def search_documents(query: str) -> str:
+    """Search the user's uploaded documents for information relevant to the query."""
+    docs = vector_store.similarity_search(query, k=5)
+    ...
+```
+
+**Live agent status via thread + queue**
+
+The crew blocks the response thread while it runs. To stream agent status cards to the UI in real time (not after the crew finishes), the crew runs in a background thread and pushes status dicts into a `queue.Queue`. The generator drains the queue live, yielding `agent_update` SSE events as each task completes.
+
+```
+generator (main thread)          crew (background thread)
+        │                                 │
+        │  ←── agent_update (doc done) ───│
+        │  ←── agent_update (web done) ───│
+        │  ←── agent_update (synth done) ─│
+        │  ←── None sentinel ─────────────│
+        │
+    yield text chunks
+```
+
+**SSE event types**
+
+The `/api/chat` stream now emits two types of SSE events:
+
+| `type` | Payload | Frontend action |
+|--------|---------|-----------------|
+| `agent_update` | `{agent, icon, summary, status}` | Update agent status card |
+| *(none / legacy)* | `{text}` | Append to response bubble |
+
+Status values: `pending` → `working` → `done`. The UI shows a pulsing dot for `working` and a green dot for `done`.
+
+**Fallback**
+
+If `crewai` is not installed or the import fails, the pipeline falls back to the original single-LLM path (query rewrite → ChromaDB retrieval → Ollama stream) with no change in API surface.
+
+**Required env vars for multi-agent mode**
+
+| Variable | Purpose |
+|----------|---------|
+| `OPENAI_API_KEY` | Powers all three CrewAI agents (`gpt-4o-mini`) |
+| `SERPER_API_KEY` | Web search for the Web Researcher agent |
+
+---
+
 ### Similarity-grounded follow-up suggestions
 
 After answering, the app suggests follow-up questions the user might ask. Rather than letting the LLM invent suggestions from scratch (which produces generic or hallucinated questions), suggestions are grounded in the vector store.

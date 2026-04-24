@@ -98,10 +98,39 @@ class RAGChatbot:
         messages.append(HumanMessage(content=augmented_message))
         return messages
 
-    def _run_crew(self, query: str, doc_context: str, update_queue: queue.Queue) -> str:
-        """Run 3 CrewAI agents and push live status updates into update_queue.
+    def _context_is_sufficient(self, question: str, context: str) -> bool:
+        """Quick YES/NO check: can the retrieved context answer the question?"""
+        if not context:
+            return False
+        response = self._llm.invoke([
+            SystemMessage(content="You decide if provided context can answer a question. Reply only YES or NO."),
+            HumanMessage(content=f"Context:\n{context}\n\nQuestion: {question}"),
+        ])
+        return "yes" in response.content.strip().lower()
 
-        Returns the final synthesized response string.
+    def _make_doc_search_tool(self):
+        """Return a CrewAI tool that queries the chatbot's own vector store."""
+        from crewai.tools import tool
+        vector_store = self.vector_store
+
+        @tool("Search Documents")
+        def search_documents(query: str) -> str:
+            """Search the user's uploaded documents for information relevant to the query.
+            Use this tool with different search terms to find all relevant content."""
+            docs = vector_store.similarity_search(query, k=5)
+            if not docs:
+                return "No relevant content found in the uploaded documents."
+            return "\n\n".join(f"[Chunk {i + 1}]\n{doc}" for i, doc in enumerate(docs))
+
+        return search_documents
+
+    def _run_crew(self, query: str, update_queue: queue.Queue, use_doc: bool = True, use_web: bool = True) -> str:
+        """Run CrewAI agents and push live status updates into update_queue.
+
+        Routing:
+          use_doc=True,  use_web=False → doc analyst + synthesizer only
+          use_doc=True,  use_web=True  → all 3 agents
+          use_doc=False, use_web=True  → web researcher + synthesizer only
         Falls back to empty string if crewai is unavailable.
         """
         try:
@@ -112,37 +141,31 @@ class RAGChatbot:
 
         llm = LLM(model="gpt-4o-mini", max_tokens=1500)
 
-        # Emit initial states before crew starts
-        update_queue.put({"type": "agent_update", "agent": "Document Analyst", "icon": "📄", "summary": "Reading your documents…", "status": "working"})
-        update_queue.put({"type": "agent_update", "agent": "Web Researcher",    "icon": "🌐", "summary": "Standing by…",           "status": "pending"})
-        update_queue.put({"type": "agent_update", "agent": "Synthesizer",       "icon": "🔀", "summary": "Waiting for results…",   "status": "pending"})
+        # Emit initial states for whichever agents will run
+        if use_doc:
+            update_queue.put({"type": "agent_update", "agent": "Document Analyst", "icon": "📄", "summary": "Searching your documents…", "status": "working"})
+        if use_web:
+            status = "pending" if use_doc else "working"
+            summary = "Standing by…" if use_doc else "Searching the web…"
+            update_queue.put({"type": "agent_update", "agent": "Web Researcher", "icon": "🌐", "summary": summary, "status": status})
+        update_queue.put({"type": "agent_update", "agent": "Synthesizer", "icon": "🔀", "summary": "Waiting for results…", "status": "pending"})
 
         def on_doc_done(output):
-            summary = _humanize_summary(output.raw) if output.raw else "Finished reading documents."
-            update_queue.put({"type": "agent_update", "agent": "Document Analyst", "icon": "📄", "summary": summary,               "status": "done"})
-            update_queue.put({"type": "agent_update", "agent": "Web Researcher",   "icon": "🌐", "summary": "Searching the web…",  "status": "working"})
+            summary = _humanize_summary(output.raw) if output.raw else "Finished searching documents."
+            update_queue.put({"type": "agent_update", "agent": "Document Analyst", "icon": "📄", "summary": summary, "status": "done"})
+            if use_web:
+                update_queue.put({"type": "agent_update", "agent": "Web Researcher", "icon": "🌐", "summary": "Searching the web…", "status": "working"})
+            else:
+                update_queue.put({"type": "agent_update", "agent": "Synthesizer", "icon": "🔀", "summary": "Summarising…", "status": "working"})
 
         def on_web_done(output):
             summary = _humanize_summary(output.raw) if output.raw else "Web search complete."
-            update_queue.put({"type": "agent_update", "agent": "Web Researcher", "icon": "🌐", "summary": summary,              "status": "done"})
-            update_queue.put({"type": "agent_update", "agent": "Synthesizer",    "icon": "🔀", "summary": "Combining results…", "status": "working"})
+            update_queue.put({"type": "agent_update", "agent": "Web Researcher", "icon": "🌐", "summary": summary, "status": "done"})
+            update_queue.put({"type": "agent_update", "agent": "Synthesizer", "icon": "🔀", "summary": "Combining results…", "status": "working"})
 
         def on_synth_done(output):
             update_queue.put({"type": "agent_update", "agent": "Synthesizer", "icon": "🔀", "summary": "Response ready.", "status": "done"})
 
-        doc_agent = Agent(
-            role="Document Analyst",
-            goal="Extract and summarize relevant information from provided document excerpts",
-            backstory="Expert at reading documents and identifying relevant passages. Never fabricates.",
-            verbose=False, allow_delegation=False, llm=llm,
-        )
-        web_agent = Agent(
-            role="Web Researcher",
-            goal="Find up-to-date information from the web to complement the document findings",
-            backstory="Expert at searching the web and noting source URLs for every fact reported.",
-            verbose=False, allow_delegation=False, llm=llm,
-            tools=[SerperDevTool()],
-        )
         synth_agent = Agent(
             role="Synthesizer",
             goal="Produce a single well-structured answer that clearly attributes each piece of information",
@@ -150,50 +173,76 @@ class RAGChatbot:
             verbose=False, allow_delegation=False, llm=llm,
         )
 
-        doc_task = Task(
-            description=(
-                f"Using ONLY the document excerpts below, answer: {query}\n\n"
-                f"Documents:\n{doc_context or 'No document context available.'}\n\n"
-                "State clearly if nothing relevant is found."
-            ),
-            agent=doc_agent,
-            callback=on_doc_done,
-            expected_output="A concise summary of what the documents say, or a statement that they don't cover the topic.",
-        )
-        web_task = Task(
-            description=(
-                f"Search the web for current information about: {query}\n"
-                "Find 2-3 reliable sources. Include the source URL for each finding."
-            ),
-            agent=web_agent,
-            callback=on_web_done,
-            expected_output="A summary of web findings with source URLs.",
-        )
+        agents = []
+        context_tasks = []
+
+        if use_doc:
+            doc_agent = Agent(
+                role="Document Analyst",
+                goal="Find and summarize relevant information from the user's uploaded documents",
+                backstory=(
+                    "Expert at querying document collections and extracting key information. "
+                    "You always use the search tool with multiple relevant queries to ensure thorough coverage. "
+                    "You never fabricate — only report what the documents actually contain."
+                ),
+                verbose=False, allow_delegation=False, llm=llm,
+                tools=[self._make_doc_search_tool()],
+            )
+            doc_task = Task(
+                description=(
+                    f"Use the Search Documents tool to find all relevant information about: {query}\n\n"
+                    "Search using multiple relevant terms and phrases to ensure thorough coverage. "
+                    "Summarize what you find. If the documents contain nothing relevant, say so clearly."
+                ),
+                agent=doc_agent,
+                callback=on_doc_done,
+                expected_output="A concise summary of what the documents say, or that they don't cover the topic.",
+            )
+            agents.append(doc_agent)
+            context_tasks.append(doc_task)
+
+        if use_web:
+            web_agent = Agent(
+                role="Web Researcher",
+                goal="Find up-to-date information from the web",
+                backstory="Expert at searching the web and noting source URLs for every fact reported.",
+                verbose=False, allow_delegation=False, llm=llm,
+                tools=[SerperDevTool()],
+            )
+            web_task = Task(
+                description=(
+                    f"Search the web for current information about: {query}\n"
+                    "Find 2-3 reliable sources. Include the source URL for each finding."
+                ),
+                agent=web_agent,
+                callback=on_web_done,
+                expected_output="A summary of web findings with source URLs.",
+            )
+            agents.append(web_agent)
+            context_tasks.append(web_task)
+
+        # Build synth prompt based on which sections exist
+        sections = []
+        if use_doc:
+            sections.append("📄 **From your documents:**\n<what the documents say>")
+        if use_web:
+            sections.append("🌐 **From Google Search:**\n<web findings with inline source URLs>")
+        sections.append("**Summary:**\n<1-2 sentence answer>")
+        sections.append("**You might also ask:**\n- <follow-up 1>\n- <follow-up 2>\n- <follow-up 3>")
+
         synth_task = Task(
             description=(
                 f"Write a complete answer to: {query}\n\n"
-                "Format your response exactly like this:\n\n"
-                "📄 **From your documents:**\n"
-                "<what the documents say, or that they don't cover this>\n\n"
-                "🌐 **From Google Search:**\n"
-                "<web findings with inline source URLs>\n\n"
-                "**Summary:**\n"
-                "<1-2 sentence combined answer>\n\n"
-                "**You might also ask:**\n"
-                "- <follow-up 1>\n- <follow-up 2>\n- <follow-up 3>"
+                "Format your response exactly like this:\n\n" + "\n\n".join(sections)
             ),
             agent=synth_agent,
-            context=[doc_task, web_task],
+            context=context_tasks,
             callback=on_synth_done,
-            expected_output="A structured response with document and web sections clearly labelled.",
+            expected_output="A structured response with clearly labelled source sections.",
         )
 
-        crew = Crew(
-            agents=[doc_agent, web_agent, synth_agent],
-            tasks=[doc_task, web_task, synth_task],
-            process=Process.sequential,
-            verbose=False,
-        )
+        agents.append(synth_agent)
+        crew = Crew(agents=agents, tasks=context_tasks + [synth_task], process=Process.sequential, verbose=False)
         result = crew.kickoff(inputs={"query": query})
         return result.raw
 
@@ -204,12 +253,19 @@ class RAGChatbot:
         retrieval_query = self._rewrite_query(user_message) if rewrite_query else user_message
         context, related = self._retrieve_context(retrieval_query)
 
+        if not context:
+            use_doc, use_web = False, True
+        elif self._context_is_sufficient(user_message, context):
+            use_doc, use_web = True, False
+        else:
+            use_doc, use_web = True, True
+
         update_queue: queue.Queue = queue.Queue()
         result_holder: list = [None, None]  # [response, error]
 
         def run_crew():
             try:
-                result_holder[0] = self._run_crew(retrieval_query, context, update_queue)
+                result_holder[0] = self._run_crew(retrieval_query, update_queue, use_doc=use_doc, use_web=use_web)
             except Exception as e:
                 result_holder[1] = e
             finally:
