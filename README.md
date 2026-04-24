@@ -159,12 +159,131 @@ rag-chatbot/
 
 ## How it works
 
-1. **Ingest** — documents are chunked and embedded with `nomic-embed-text`; vectors are stored in ChromaDB
-2. **Query rewriting** — vague follow-up questions are rewritten into standalone search queries using recent conversation history
-3. **Retrieval** — the rewritten query is used to find the top-k most relevant chunks via cosine similarity
-4. **Augmentation** — retrieved chunks are injected into the prompt as context
-5. **Generation** — the LLM streams a response grounded in the retrieved context
-6. **Suggestions** — follow-up questions are grounded in semantically similar chunks from the vector store (see below)
+### Full pipeline
+
+```
+User message (text or voice)
+        │
+        ▼
+ 1. Query rewriting          (Ollama — standalone search query from conversation history)
+        │
+        ▼
+ 2. Vector store retrieval   (ChromaDB cosine similarity — top 6 chunks)
+        │
+        ▼
+ 3. Routing decision         (Ollama — YES/NO: can these chunks answer the question?)
+        │
+        ├─ Docs sufficient  ──▶  4a. Doc Analyst + Synthesizer
+        ├─ Docs insufficient ──▶  4b. Doc Analyst + Web Researcher + Synthesizer
+        └─ No docs at all   ──▶  4c. Web Researcher + Synthesizer
+        │
+        ▼
+ 5. Streaming response       (SSE — agent status cards first, then final answer)
+```
+
+---
+
+### 1 — Query rewriting (`_rewrite_query`)
+
+Before hitting the vector store, the user's message is rewritten into a self-contained search query using the last 6 turns of conversation history. This makes follow-up questions like *"what about the visual side?"* or *"give me an example of each"* retrievable on their own.
+
+- Uses the local Ollama model (same one selected in the UI)
+- Skipped on the first turn (no history yet)
+- Only the rewritten query hits ChromaDB — the original message is still used in the final prompt
+
+---
+
+### 2 — Retrieval (`_retrieve_context`)
+
+Fetches `2 × n` chunks (default `n = 3`) from ChromaDB via cosine similarity:
+
+| Slice | Purpose |
+|-------|---------|
+| Top 3 | Injected as answer context |
+| Next 3 | Used as seeds for follow-up suggestions |
+
+The second slice lets the LLM generate follow-up questions that map to real document content rather than generic guesses.
+
+---
+
+### 3 — Routing decision (`_context_is_sufficient`)
+
+A fast non-streaming Ollama call asks: *"Can this context answer this question? YES or NO."*
+
+| Condition | Result |
+|-----------|--------|
+| No chunks retrieved | `use_doc=False, use_web=True` |
+| Chunks retrieved, model says YES | `use_doc=True, use_web=False` |
+| Chunks retrieved, model says NO | `use_doc=True, use_web=True` |
+
+This prevents unnecessary Google Search API calls when the documents already have a good answer, and avoids wasting the Document Analyst agent when there are no documents at all.
+
+---
+
+### 4 — Multi-agent crew (`_run_crew`)
+
+Three specialised agents run sequentially via CrewAI. Which agents are included depends on the routing decision above.
+
+#### 📄 Document Analyst
+- **Tool:** `search_documents` — a custom CrewAI tool that wraps `VectorStore.similarity_search()`
+- Actively queries the vector store with multiple search terms (not just the pre-retrieved chunks)
+- Reports what the documents say, or explicitly states they don't cover the topic
+
+#### 🌐 Web Researcher
+- **Tool:** `SerperDevTool` — real-time Google Search via the Serper API
+- Finds 2–3 current sources and includes a URL for every fact it reports
+
+#### 🔀 Synthesizer
+- No tools — reasoning only
+- Receives the outputs of both agents as context
+- Produces a single structured response with explicit attribution:
+  - `📄 From your documents:` for document findings
+  - `🌐 From Google Search:` for web findings
+  - `Summary:` combined 1–2 sentence answer
+  - `You might also ask:` follow-up questions
+
+The Synthesizer's prompt template adapts based on which sections exist — if only web was used, no document section appears, and vice versa.
+
+---
+
+### 5 — Streaming architecture
+
+The crew runs in a **background thread** while the main generator streams results back via SSE:
+
+```
+SSE generator (main thread)          CrewAI crew (background thread)
+        │                                       │
+        │  ◀── {"type":"agent_update", ...} ────│  (task callbacks push to queue)
+        │  ◀── {"type":"agent_update", ...} ────│
+        │  ◀── None  (sentinel) ────────────────│  (crew finished)
+        │
+        │  yield {"type":"text", "text": "..."}     (response chunks)
+        ▼
+     Frontend
+```
+
+Agent status cards appear in the UI in real-time as each task completes — the user sees which agent is working and a brief summary of what it found, before the final response arrives.
+
+Each task fires a `callback` on completion that pushes a status update dict into a `queue.Queue`. The generator drains this queue live, yielding `agent_update` SSE events, then yields the final text once the crew is done.
+
+---
+
+### Fallback path
+
+If `crewai` is not installed or fails to import, `stream()` falls back to the original single-LLM path: retrieved chunks are injected directly into the Ollama prompt as plain text and streamed token by token. No agent cards are shown. The API surface is unchanged.
+
+---
+
+### Voice input (`/ws/transcribe`)
+
+A WebSocket endpoint handles real-time speech-to-text:
+
+1. Browser captures audio via `MediaRecorder` (webm/opus)
+2. A 3-second chunk is sent to the backend every 3 seconds
+3. Backend appends each chunk to an in-memory buffer
+4. OpenAI Whisper transcribes the **full accumulated buffer** on every chunk — this gives increasingly accurate transcription as more speech context arrives
+5. Transcript is sent back and shown live in the input field
+6. When recording stops, `recorder.onstop` closes the WebSocket; the last transcript stays in the input for the user to review and send
 
 ---
 

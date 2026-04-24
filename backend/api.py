@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """FastAPI backend exposing the RAG chatbot as a streaming HTTP API."""
+import asyncio
 import json
 import logging
+import os
+import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
 import ollama
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -195,6 +199,47 @@ def reset():
     """Clear the chatbot's conversation history."""
     _chatbot.reset()
     return {"ok": True}
+
+
+_transcribe_executor = ThreadPoolExecutor(max_workers=2)
+
+
+def _whisper_transcribe(audio_bytes: bytes) -> str:
+    import openai
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    with tempfile.NamedTemporaryFile(suffix=".webm", delete=True) as f:
+        f.write(audio_bytes)
+        f.flush()
+        with open(f.name, "rb") as audio_file:
+            result = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+            )
+    return result.text.strip()
+
+
+@app.websocket("/ws/transcribe")
+async def transcribe_ws(websocket: WebSocket):
+    """Receive audio chunks, transcribe with Whisper, stream back partial transcripts."""
+    await websocket.accept()
+    audio_buffer = bytearray()
+    loop = asyncio.get_event_loop()
+
+    try:
+        async for chunk in websocket.iter_bytes():
+            audio_buffer.extend(chunk)
+            try:
+                transcript = await loop.run_in_executor(
+                    _transcribe_executor,
+                    _whisper_transcribe,
+                    bytes(audio_buffer),
+                )
+                if transcript:
+                    await websocket.send_json({"text": transcript})
+            except Exception as e:
+                logger.warning("Whisper transcription error: %s", e)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
 
 
 @app.post("/api/history/rollback")
