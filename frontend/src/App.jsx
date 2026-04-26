@@ -28,8 +28,6 @@ function ChatApp() {
   const navigate = useNavigate()
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
-  const [models, setModels] = useState([])
-  const [selectedModel, setSelectedModel] = useState('')
   const [docCount, setDocCount] = useState(0)
   const [documents, setDocuments] = useState([])
   const [streaming, setStreaming] = useState(false)
@@ -51,12 +49,6 @@ function ChatApp() {
   }
 
   useEffect(() => {
-    fetch('/api/models')
-      .then(r => r.json())
-      .then(d => {
-        setModels(d.models)
-        setSelectedModel(d.models[0] ?? 'llama3.2')
-      })
     refreshDocuments()
     fetch('/api/history')
       .then(r => r.json())
@@ -73,7 +65,7 @@ function ChatApp() {
   async function sendMessage() {
     if (!input.trim() || streaming) return
     const userMsg = input.trim()
-    track(messages.length === 0 ? 'first_message' : 'send_message', { model: selectedModel })
+    track(messages.length === 0 ? 'first_message' : 'send_message')
     setInput('')
     setInterrupted(false)
     setAgentUpdates([])
@@ -84,7 +76,7 @@ function ChatApp() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMsg, model: selectedModel }),
+        body: JSON.stringify({ message: userMsg }),
       })
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
@@ -133,12 +125,6 @@ function ChatApp() {
     await fetch('/api/reset', { method: 'POST' })
     setMessages([])
     track('clear_conversation')
-  }
-
-  function handleModelChange(model) {
-    track('model_change', { model })
-    setSelectedModel(model)
-    clearConversation()
   }
 
   async function handleUpload(e) {
@@ -190,11 +176,8 @@ function ChatApp() {
         <MessageList messages={messages} streaming={streaming} interrupted={interrupted} agentUpdates={agentUpdates} />
         <InputArea
           input={input}
-          models={models}
-          selectedModel={selectedModel}
           streaming={streaming}
           onInputChange={setInput}
-          onModelChange={handleModelChange}
           onSend={sendMessage}
         />
       </main>

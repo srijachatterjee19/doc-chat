@@ -121,21 +121,81 @@ Commands: `reset` to clear history, `quit` to exit.
 
 ---
 
+## Evals
+
+Quality evaluation for the RAG pipeline using [RAGAS](https://docs.ragas.io/) with your local Ollama model as the judge — no OpenAI key required.
+
+### Install eval dependencies
+
+```bash
+pip install ragas datasets
+```
+
+### Add your test cases
+
+Edit `evals/questions.json` with questions that your ingested documents can answer:
+
+```json
+[
+  {
+    "question": "What is the refund policy?",
+    "ground_truth": "30-day full refund, no questions asked."
+  },
+  {
+    "question": "How do I reset my password?",
+    "ground_truth": "Click Forgot Password on the login page and follow the email link."
+  }
+]
+```
+
+`ground_truth` is optional for `faithfulness` and `answer_relevancy`, but required to also score `context_precision`.
+
+### Run
+
+```bash
+python -m evals.run
+```
+
+```bash
+# Options
+python -m evals.run --model llama3.2          # Ollama model to use (default: llama3.2)
+python -m evals.run --k 5                     # chunks retrieved per question (default: 3)
+python -m evals.run --output evals/results.json  # save results to JSON
+```
+
+### Metrics
+
+| Metric | What it measures | Ground truth needed? |
+|--------|-----------------|----------------------|
+| Faithfulness | Answer stays within the retrieved context (no hallucination) | No |
+| Answer Relevancy | Answer actually addresses the question | No |
+| Context Precision | Retrieved chunks are relevant to the question | Yes |
+
+Scores range from 0 to 1. Results are colour-coded in the terminal: green ≥ 0.7, yellow ≥ 0.4, red < 0.4.
+
+Run evals whenever you change chunk size, the system prompt, or the retrieval `k` value to catch regressions.
+
+---
+
 ## Project structure
 
 ```
 rag-chatbot/
 ├── backend/
-│   ├── api.py            # FastAPI server (streaming SSE, /api/* routes)
-│   ├── chatbot.py        # Interactive CLI
-│   ├── ingest.py         # Document ingestion script
-│   ├── app.py            # Legacy Streamlit UI
+│   ├── api.py             # FastAPI server (streaming SSE, /api/* routes)
+│   ├── chatbot.py         # Interactive CLI
+│   ├── ingest.py          # Document ingestion script
+│   ├── app.py             # Legacy Streamlit UI
 │   └── src/
-│       ├── history.py     # JSON file-backed chat history
-│       ├── rag.py         # RAGChatbot — retrieval + streaming chat
-│       ├── vector_store.py # LangChain Chroma wrapper
+│       ├── analytics.py   # PostgreSQL-backed event tracking and metrics
+│       ├── history.py     # SQLite-backed chat history
+│       ├── rag.py         # RAGChatbot — retrieval + multi-agent streaming chat
+│       ├── vector_store.py # LangChain Chroma wrapper with LRU cache
 │       └── embeddings.py  # Ollama embedding model wrapper
-├── frontend/             # React + Vite UI
+├── evals/
+│   ├── run.py             # RAGAS eval harness
+│   └── questions.json     # Test cases (question + ground_truth pairs)
+├── frontend/              # React + Vite UI
 │   ├── src/
 │   │   ├── App.jsx
 │   │   ├── main.jsx
@@ -151,7 +211,7 @@ rag-chatbot/
 │   ├── vite.config.js
 │   └── package.json
 ├── data/
-│   └── sample.txt        # Sample knowledge base
+│   └── sample.txt         # Sample knowledge base
 └── requirements.txt
 ```
 
@@ -271,19 +331,6 @@ Each task fires a `callback` on completion that pushes a status update dict into
 ### Fallback path
 
 If `crewai` is not installed or fails to import, `stream()` falls back to the original single-LLM path: retrieved chunks are injected directly into the Ollama prompt as plain text and streamed token by token. No agent cards are shown. The API surface is unchanged.
-
----
-
-### Voice input (`/ws/transcribe`)
-
-A WebSocket endpoint handles real-time speech-to-text:
-
-1. Browser captures audio via `MediaRecorder` (webm/opus)
-2. A 3-second chunk is sent to the backend every 3 seconds
-3. Backend appends each chunk to an in-memory buffer
-4. OpenAI Whisper transcribes the **full accumulated buffer** on every chunk — this gives increasingly accurate transcription as more speech context arrives
-5. Transcript is sent back and shown live in the input field
-6. When recording stops, `recorder.onstop` closes the WebSocket; the last transcript stays in the input for the user to review and send
 
 ---
 

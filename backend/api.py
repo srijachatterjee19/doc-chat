@@ -1,30 +1,44 @@
 #!/usr/bin/env python3
 """FastAPI backend exposing the RAG chatbot as a streaming HTTP API."""
-import asyncio
 import json
 import logging
-import os
-import tempfile
+import re
 import time
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
 import ollama
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
-from .ingest import ingest_file
+from .ingest import ingest_file, read_file
+
+_BLOCKED_TERMS: frozenset[str] = frozenset({
+    "fuck", "fucking", "fucker", "shit", "bitch", "cunt", "dick", "pussy",
+    "nigger", "nigga", "bastard", "whore", "slut", "asshole", "motherfucker",
+    "faggot", "retard", "twat", "cock", "piss", "crap",
+})
+
+_FREE_PLAN_WORD_LIMIT = 10_000
+
+
+def _contains_profanity(text: str) -> bool:
+    return bool(_BLOCKED_TERMS & set(re.findall(r"\b[a-z]+\b", text.lower())))
 from .src.rag import RAGChatbot
 from .src.vector_store import VectorStore
 from .src.analytics import init_db, log_event, get_dau, get_retention, get_funnel
 
 load_dotenv()
+
+limiter = Limiter(key_func=get_remote_address)
 
 
 # --- Structured JSON logging ---
@@ -73,6 +87,8 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="RAG Chatbot API", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -150,17 +166,23 @@ def models():
 
 
 @app.post("/api/chat")
-def chat(request: ChatRequest):
+@limiter.limit("20/minute")
+def chat(request: Request, body: ChatRequest):
     """Stream a RAG-augmented chat response as SSE."""
-    if _chatbot.model != request.model:
-        _chatbot.model = request.model
+    if _chatbot.model != body.model:
+        _chatbot.model = body.model
         _chatbot.reset()
 
     def generate():
+        if _contains_profanity(body.message):
+            msg = "I'm not able to respond to messages containing abusive language. Please keep the conversation respectful."
+            yield f"data: {json.dumps({'text': msg})}\n\ndata: [DONE]\n\n"
+            return
+
         full_response = ""
         stream_start = time.perf_counter()
         first_token_ms: float | None = None
-        for chunk in _chatbot.stream(request.message, rewrite_query=request.rewrite_query):
+        for chunk in _chatbot.stream(body.message, rewrite_query=body.rewrite_query):
             if isinstance(chunk, dict):
                 chunk_type = chunk.get("type")
                 if chunk_type == "agent_update":
@@ -177,13 +199,13 @@ def chat(request: ChatRequest):
                 full_response += chunk
                 yield f"data: {json.dumps({'text': chunk})}\n\n"
         if full_response:
-            _chatbot.commit(request.message, full_response)
+            _chatbot.commit(body.message, full_response)
             logger.info(
                 "chat completed",
                 extra={
                     "event": "chat",
-                    "model": request.model,
-                    "message_chars": len(request.message),
+                    "model": body.model,
+                    "message_chars": len(body.message),
                     "response_chars": len(full_response),
                     "first_token_ms": first_token_ms,
                     "total_stream_ms": round((time.perf_counter() - stream_start) * 1000, 1),
@@ -195,51 +217,11 @@ def chat(request: ChatRequest):
 
 
 @app.post("/api/reset")
-def reset():
+@limiter.limit("10/minute")
+def reset(request: Request):
     """Clear the chatbot's conversation history."""
     _chatbot.reset()
     return {"ok": True}
-
-
-_transcribe_executor = ThreadPoolExecutor(max_workers=2)
-
-
-def _whisper_transcribe(audio_bytes: bytes) -> str:
-    import openai
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=True) as f:
-        f.write(audio_bytes)
-        f.flush()
-        with open(f.name, "rb") as audio_file:
-            result = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-            )
-    return result.text.strip()
-
-
-@app.websocket("/ws/transcribe")
-async def transcribe_ws(websocket: WebSocket):
-    """Receive audio chunks, transcribe with Whisper, stream back partial transcripts."""
-    await websocket.accept()
-    audio_buffer = bytearray()
-    loop = asyncio.get_event_loop()
-
-    try:
-        async for chunk in websocket.iter_bytes():
-            audio_buffer.extend(chunk)
-            try:
-                transcript = await loop.run_in_executor(
-                    _transcribe_executor,
-                    _whisper_transcribe,
-                    bytes(audio_buffer),
-                )
-                if transcript:
-                    await websocket.send_json({"text": transcript})
-            except Exception as e:
-                logger.warning("Whisper transcription error: %s", e)
-    except (WebSocketDisconnect, RuntimeError):
-        pass
 
 
 @app.post("/api/history/rollback")
@@ -256,17 +238,31 @@ _MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...)):
+@limiter.limit("5/minute")
+async def upload(request: Request, file: UploadFile = File(...)):
     """Ingest an uploaded document and save the original to uploads/."""
     if not file.filename.endswith((".txt", ".md", ".pdf")):
         raise HTTPException(status_code=400, detail="Only .txt, .md, and .pdf files are supported.")
     content = await file.read()
     if len(content) > _MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail="File exceeds the 10 MB limit.")
+
+    dest_path = _UPLOADS_DIR / file.filename
     _UPLOADS_DIR.mkdir(exist_ok=True)
-    dest = _UPLOADS_DIR / file.filename
-    dest.write_bytes(content)
-    ingest_file(str(dest), _vector_store)
+    dest_path.write_bytes(content)
+    try:
+        text_content = read_file(dest_path)
+    except Exception:
+        text_content = ""
+    word_count = len(text_content.split())
+    if word_count > _FREE_PLAN_WORD_LIMIT:
+        dest_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=402,
+            detail=f"This document contains {word_count:,} words, which exceeds the {_FREE_PLAN_WORD_LIMIT:,}-word limit on your current plan. Upgrade to Pro to upload larger documents.",
+        )
+
+    ingest_file(str(dest_path), _vector_store)
     doc_count = _vector_store.count()
     logger.info(
         "document ingested",

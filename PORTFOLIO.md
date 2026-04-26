@@ -11,6 +11,7 @@ DocChat is a production-ready RAG (Retrieval-Augmented Generation) chatbot that 
 The project covers the full stack: a React frontend with live streaming UI, a FastAPI backend with Server-Sent Events, a ChromaDB vector store, a multi-agent CrewAI pipeline, and an OpenAI Whisper voice input system.
 
 **Live stack:**
+
 - **Frontend:** React 18 + Vite, Server-Sent Events, WebSocket
 - **Backend:** FastAPI, Python 3.11
 - **LLMs:** Ollama (local, for routing/rewriting) + GPT-4o-mini (CrewAI agents)
@@ -63,7 +64,7 @@ Docs sufficient        →  Document Analyst + Synthesizer
 Docs insufficient      →  Document Analyst + Web Researcher + Synthesizer
 ```
 
-The routing decision is made with a single non-streaming Ollama call: *"Can this context answer this question? YES or NO."*
+The routing decision is made with a single non-streaming Ollama call: _"Can this context answer this question? YES or NO."_
 
 ---
 
@@ -71,11 +72,11 @@ The routing decision is made with a single non-streaming Ollama call: *"Can this
 
 Three specialised agents run sequentially, each with a defined role and tool:
 
-| Agent | Tool | Responsibility |
-|-------|------|----------------|
+| Agent               | Tool                           | Responsibility                                       |
+| ------------------- | ------------------------------ | ---------------------------------------------------- |
 | 📄 Document Analyst | Custom `search_documents` tool | Queries the vector store, reports what documents say |
-| 🌐 Web Researcher | SerperDevTool (Google Search) | Finds current web sources with URLs |
-| 🔀 Synthesizer | None (reasoning only) | Combines both into a structured, attributed response |
+| 🌐 Web Researcher   | SerperDevTool (Google Search)  | Finds current web sources with URLs                  |
+| 🔀 Synthesizer      | None (reasoning only)          | Combines both into a structured, attributed response |
 
 **Why a custom document tool instead of pre-retrieved chunks?**
 
@@ -112,24 +113,24 @@ Each task fires a `callback` on completion that pushes a status dict into a `que
 
 The SSE stream carries two event types:
 
-| type | payload | frontend action |
-|------|---------|-----------------|
-| `agent_update` | `{agent, icon, summary, status}` | Update agent status card |
-| *(none)* | `{text}` | Append to response bubble |
+| type           | payload                          | frontend action           |
+| -------------- | -------------------------------- | ------------------------- |
+| `agent_update` | `{agent, icon, summary, status}` | Update agent status card  |
+| _(none)_       | `{text}`                         | Append to response bubble |
 
 ---
 
 ### 4. Query Rewriting
 
-Vague follow-up questions are rewritten into self-contained search queries before hitting the vector store. Without this, queries like *"what about the visual side?"* or *"give me an example"* would retrieve irrelevant chunks.
+Vague follow-up questions are rewritten into self-contained search queries before hitting the vector store. Without this, queries like _"what about the visual side?"_ or _"give me an example"_ would retrieve irrelevant chunks.
 
 The rewriter uses the last 6 turns of conversation history and the local Ollama model — fast and free.
 
-| Turn | Raw message | Rewritten query |
-|------|------------|-----------------|
-| 2 | *"Can you give me an example of each?"* | *"examples of supervised, unsupervised, and reinforcement learning"* |
-| 3 | *"Which one is used in recommendations?"* | *"machine learning type used in recommendation systems"* |
-| 5 | *"What are real-world applications of that?"* | *"real-world applications of computer vision"* |
+| Turn | Raw message                                   | Rewritten query                                                      |
+| ---- | --------------------------------------------- | -------------------------------------------------------------------- |
+| 2    | _"Can you give me an example of each?"_       | _"examples of supervised, unsupervised, and reinforcement learning"_ |
+| 3    | _"Which one is used in recommendations?"_     | _"machine learning type used in recommendation systems"_             |
+| 5    | _"What are real-world applications of that?"_ | _"real-world applications of computer vision"_                       |
 
 ---
 
@@ -190,10 +191,10 @@ If the CrewAI package is unavailable, `stream()` automatically falls back to a d
 
 ### Why two LLMs?
 
-| Model | Used for | Why |
-|-------|----------|-----|
-| Ollama (local) | Query rewriting, routing, fallback generation | Free, fast, no API latency, runs on device |
-| GPT-4o-mini (OpenAI) | CrewAI agents | Reliable tool-use — local models hallucinate tool calls |
+| Model                | Used for                                      | Why                                                     |
+| -------------------- | --------------------------------------------- | ------------------------------------------------------- |
+| Ollama (local)       | Query rewriting, routing, fallback generation | Free, fast, no API latency, runs on device              |
+| GPT-4o-mini (OpenAI) | CrewAI agents                                 | Reliable tool-use — local models hallucinate tool calls |
 
 Local models consistently fail to follow the ReAct tool-calling format required by CrewAI. Using GPT-4o-mini only for the agent layer keeps the tool calls reliable while keeping costs minimal (mini is cheap).
 
@@ -265,33 +266,33 @@ App.jsx  ───────────────────────�
 
 **State managed:**
 
-| State | Type | Purpose |
-|-------|------|---------|
-| `messages` | `{role, content}[]` | Full conversation history rendered in the UI |
-| `streaming` | `boolean` | Disables input and send button while response is in flight |
-| `agentUpdates` | `{agent, icon, summary, status}[]` | Live agent status cards shown above the streaming response |
-| `documents` | array | Sidebar document list |
-| `theme` | `'dark' \| 'light'` | Persisted to `localStorage`, applied via `data-theme` attribute |
+| State          | Type                               | Purpose                                                         |
+| -------------- | ---------------------------------- | --------------------------------------------------------------- |
+| `messages`     | `{role, content}[]`                | Full conversation history rendered in the UI                    |
+| `streaming`    | `boolean`                          | Disables input and send button while response is in flight      |
+| `agentUpdates` | `{agent, icon, summary, status}[]` | Live agent status cards shown above the streaming response      |
+| `documents`    | array                              | Sidebar document list                                           |
+| `theme`        | `'dark' \| 'light'`                | Persisted to `localStorage`, applied via `data-theme` attribute |
 
 **The SSE streaming loop:**
 
 ```js
-const reader = response.body.getReader()
-const decoder = new TextDecoder()
-let buffer = ''
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+let buffer = "";
 
 while (true) {
-  const { done, value } = await reader.read()
-  if (done) break
-  buffer += decoder.decode(value, { stream: true })
-  const lines = buffer.split('\n')
-  buffer = lines.pop() ?? ''           // keep incomplete line for next chunk
+  const { done, value } = await reader.read();
+  if (done) break;
+  buffer += decoder.decode(value, { stream: true });
+  const lines = buffer.split("\n");
+  buffer = lines.pop() ?? ""; // keep incomplete line for next chunk
 
   for (const line of lines) {
-    if (!line.startsWith('data: ')) continue
-    const parsed = JSON.parse(line.slice(6))
+    if (!line.startsWith("data: ")) continue;
+    const parsed = JSON.parse(line.slice(6));
 
-    if (parsed.type === 'agent_update') {
+    if (parsed.type === "agent_update") {
       // upsert into agentUpdates by agent name
     } else if (parsed.text) {
       // append to last message's content
@@ -313,13 +314,15 @@ The `TextDecoder` can split a UTF-8 character or an SSE line across two `read()`
 Agent cards are stored by agent name. When the same agent transitions from `working` to `done`, `findIndex` locates the existing card and replaces it in place — so cards don't flash or reorder, they update smoothly.
 
 ```js
-setAgentUpdates(prev => {
-  const idx = prev.findIndex(u => u.agent === parsed.agent)
+setAgentUpdates((prev) => {
+  const idx = prev.findIndex((u) => u.agent === parsed.agent);
   if (idx >= 0) {
-    const next = [...prev]; next[idx] = parsed; return next
+    const next = [...prev];
+    next[idx] = parsed;
+    return next;
   }
-  return [...prev, parsed]
-})
+  return [...prev, parsed];
+});
 ```
 
 ---
@@ -327,6 +330,7 @@ setAgentUpdates(prev => {
 ### MessageList.jsx — markdown rendering and agent cards
 
 **Two responsibilities:**
+
 1. Render each message (user = plain text, assistant = ReactMarkdown)
 2. Show live agent status cards above the last assistant message
 
@@ -337,30 +341,35 @@ User messages are plain text and need `white-space: pre-wrap` to preserve line b
 **Agent cards placement:**
 
 ```jsx
-{messages.map((msg, i) => {
-  const isLastAssistant = msg.role === 'assistant' && i === messages.length - 1
-  return (
-    <div key={i}>
-      {isLastAssistant && agentUpdates.length > 0 && (
-        <div className="agent-activity">
-          {agentUpdates.map(u => <AgentCard key={u.agent} {...u} />)}
-        </div>
-      )}
-      <div className={`message ${msg.role}`}>...</div>
-    </div>
-  )
-})}
+{
+  messages.map((msg, i) => {
+    const isLastAssistant =
+      msg.role === "assistant" && i === messages.length - 1;
+    return (
+      <div key={i}>
+        {isLastAssistant && agentUpdates.length > 0 && (
+          <div className="agent-activity">
+            {agentUpdates.map((u) => (
+              <AgentCard key={u.agent} {...u} />
+            ))}
+          </div>
+        )}
+        <div className={`message ${msg.role}`}>...</div>
+      </div>
+    );
+  });
+}
 ```
 
 Cards only appear above the last assistant message — not on historical turns. When the response is complete, they stay visible so the user can see which sources were used.
 
 **Three card states:**
 
-| Status | Visual | Meaning |
-|--------|--------|---------|
-| `pending` | Grey dot, dimmed | Agent queued, not started |
-| `working` | Orange pulsing dot | Agent currently running |
-| `done` | Green dot | Agent finished, summary shown |
+| Status    | Visual             | Meaning                       |
+| --------- | ------------------ | ----------------------------- |
+| `pending` | Grey dot, dimmed   | Agent queued, not started     |
+| `working` | Orange pulsing dot | Agent currently running       |
+| `done`    | Green dot          | Agent finished, summary shown |
 
 **Auto-scroll:**
 
@@ -397,8 +406,13 @@ Whisper is a sequence model — more audio context produces more accurate transc
 Different browsers support different audio formats. Rather than hard-coding `audio/webm`, the component probes for support in order of preference:
 
 ```js
-const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg']
-return types.find(t => MediaRecorder.isTypeSupported(t)) ?? ''
+const types = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/mp4",
+  "audio/ogg",
+];
+return types.find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
 ```
 
 ---
@@ -410,11 +424,11 @@ The header contains a `•••` dropdown menu (Upgrade, Clear, Sign out). A co
 ```js
 useEffect(() => {
   function handleClick(e) {
-    if (!menuRef.current?.contains(e.target)) setMenuOpen(false)
+    if (!menuRef.current?.contains(e.target)) setMenuOpen(false);
   }
-  document.addEventListener('mousedown', handleClick)
-  return () => document.removeEventListener('mousedown', handleClick)
-}, [])
+  document.addEventListener("mousedown", handleClick);
+  return () => document.removeEventListener("mousedown", handleClick);
+}, []);
 ```
 
 `Node.contains()` checks if the click target is inside the menu element. If it isn't, the menu closes. The listener is added to `document` (not the menu itself) so it catches clicks anywhere on the page. The cleanup function in the `useEffect` return removes the listener when the component unmounts, preventing memory leaks.
@@ -426,7 +440,7 @@ useEffect(() => {
 The sidebar lists ingested documents and handles file uploads. Two behaviours based on file type:
 
 - **PDF** — clicking opens the file in a new browser tab (`/api/files/{name}`)
-- **Text/Markdown** — clicking pre-fills the input with *"What is {filename} about?"*
+- **Text/Markdown** — clicking pre-fills the input with _"What is {filename} about?"_
 
 File upload uses `FormData` and a hidden `<input type="file">` triggered via a ref, allowing a styled button rather than the browser's default file picker.
 
@@ -437,7 +451,7 @@ File upload uses `FormData` and a hidden `<input type="file">` triggered via a r
 The entire colour palette is defined as CSS custom properties on `:root` (dark) and `[data-theme="light"]` (light). Toggling theme is a single attribute change on `<html>`:
 
 ```js
-document.documentElement.setAttribute('data-theme', theme)
+document.documentElement.setAttribute("data-theme", theme);
 ```
 
 This means no class toggling, no JavaScript colour calculations — every component automatically picks up the right colours because they all reference variables like `var(--bg)`, `var(--text)`, `var(--accent)`.
@@ -450,7 +464,7 @@ The preference is persisted to `localStorage` and read on first render, so the t
 
 ```jsx
 function ProtectedRoute({ children }) {
-  return isLoggedIn() ? children : <Navigate to="/login" replace />
+  return isLoggedIn() ? children : <Navigate to="/login" replace />;
 }
 ```
 
@@ -463,9 +477,9 @@ function ProtectedRoute({ children }) {
 Every significant user action fires a tracking event through `analytics.js`:
 
 ```js
-track('first_message', { model: selectedModel })
-track('upload_document', { file_type: file.type })
-track('model_change', { model })
+track("first_message", { model: selectedModel });
+track("upload_document", { file_type: file.type });
+track("model_change", { model });
 ```
 
 `track()` sends to both Google Analytics 4 and the backend `/api/metrics/event` endpoint (which logs to PostgreSQL). The user is identified by a UUID generated once and stored in `localStorage`. This lets you correlate frontend events with backend logs using the same user ID.
@@ -503,7 +517,7 @@ stream(user_message)
 
 ### Step 1 — Query rewriting
 
-Multi-turn conversations produce vague follow-up questions that retrieve nothing useful from the vector store: *"what about the visual side?"*, *"give me an example"*. The rewriter converts these into self-contained search queries.
+Multi-turn conversations produce vague follow-up questions that retrieve nothing useful from the vector store: _"what about the visual side?"_, _"give me an example"_. The rewriter converts these into self-contained search queries.
 
 ```python
 def _rewrite_query(self, user_message: str) -> str:
@@ -537,7 +551,7 @@ def _retrieve_context(self, query: str, n_results: int = 3) -> tuple[str, str]:
     return answer_ctx, suggest_ctx
 ```
 
-**Split retrieval pool:** The top 3 chunks go to the answer context; the next 3 go to a separate suggestions pool. The LLM uses the suggestions pool *only* to generate the "You might also ask" follow-ups — this avoids polluting the answer context with lower-relevance chunks while still giving the model material to suggest useful next questions.
+**Split retrieval pool:** The top 3 chunks go to the answer context; the next 3 go to a separate suggestions pool. The LLM uses the suggestions pool _only_ to generate the "You might also ask" follow-ups — this avoids polluting the answer context with lower-relevance chunks while still giving the model material to suggest useful next questions.
 
 ---
 
@@ -556,7 +570,7 @@ def _context_is_sufficient(self, question: str, context: str) -> bool:
 
 **Why a whole LLM call just for YES/NO?** A keyword search or length check can't determine semantic sufficiency. A document might contain many words about the topic but still not answer the specific question. The Ollama call is non-streaming and typically returns in under a second, making it cheap enough to run on every query.
 
-The `.lower()` + `"yes" in` approach is intentionally loose — models sometimes return *"Yes, the context..."* rather than a bare *"YES"*.
+The `.lower()` + `"yes" in` approach is intentionally loose — models sometimes return _"Yes, the context..."_ rather than a bare _"YES"_.
 
 ---
 
@@ -616,7 +630,7 @@ def _make_doc_search_tool(self):
     return search_documents
 ```
 
-**Why a tool instead of pre-fetched chunks?** Pre-fetching gives the agent static text. An active tool lets the Document Analyst issue multiple searches with different phrasings — important for multi-facet questions. For *"what are the benefits and risks of X?"*, a single retrieval pass might find the benefits section but miss the risks section. An active tool lets the agent search *"benefits of X"* and *"risks of X"* separately.
+**Why a tool instead of pre-fetched chunks?** Pre-fetching gives the agent static text. An active tool lets the Document Analyst issue multiple searches with different phrasings — important for multi-facet questions. For _"what are the benefits and risks of X?"_, a single retrieval pass might find the benefits section but miss the risks section. An active tool lets the agent search _"benefits of X"_ and _"risks of X"_ separately.
 
 The closure captures `self.vector_store` so the tool has access to the live, up-to-date vector store without any global state.
 
@@ -739,10 +753,10 @@ The fallback yields raw strings (not dicts), which the `generate()` function in 
 
 History is stored in two places:
 
-| Store | Class | Format | Scope |
-|-------|-------|--------|-------|
-| In-memory | `self.history` | `[{role, content}]` | Loaded at startup, modified in-flight |
-| On-disk | `ChatHistory` (history.py) | JSON file | Persisted across restarts |
+| Store     | Class                      | Format              | Scope                                 |
+| --------- | -------------------------- | ------------------- | ------------------------------------- |
+| In-memory | `self.history`             | `[{role, content}]` | Loaded at startup, modified in-flight |
+| On-disk   | `ChatHistory` (history.py) | JSON file           | Persisted across restarts             |
 
 `commit()` writes to both after a complete response:
 
@@ -765,11 +779,11 @@ The backend exposes three distinct communication channels, each chosen for a spe
 
 ### Channel overview
 
-| Channel | Protocol | Endpoint | Direction | Used for |
-|---------|----------|----------|-----------|----------|
-| Chat streaming | HTTP + SSE | `POST /api/chat` | Server → Client (after initial request) | LLM text chunks + agent status |
-| Voice transcription | WebSocket | `WS /ws/transcribe` | Bidirectional binary/text | Audio chunks in, transcript text out |
-| Data API | HTTP REST | `/api/*` | Request/response | History, models, upload, metrics |
+| Channel             | Protocol   | Endpoint            | Direction                               | Used for                             |
+| ------------------- | ---------- | ------------------- | --------------------------------------- | ------------------------------------ |
+| Chat streaming      | HTTP + SSE | `POST /api/chat`    | Server → Client (after initial request) | LLM text chunks + agent status       |
+| Voice transcription | WebSocket  | `WS /ws/transcribe` | Bidirectional binary/text               | Audio chunks in, transcript text out |
+| Data API            | HTTP REST  | `/api/*`            | Request/response                        | History, models, upload, metrics     |
 
 ---
 
@@ -795,10 +809,10 @@ Each message is `data: <JSON>\n\n`. The stream ends with the sentinel `data: [DO
 
 **Two SSE event types**
 
-| `type` field | Payload fields | Frontend action |
-|--------------|---------------|-----------------|
-| `agent_update` | `agent`, `icon`, `summary`, `status` | Upsert agent status card by agent name |
-| *(no type field)* | `text` | Append string to last message's `content` |
+| `type` field      | Payload fields                       | Frontend action                           |
+| ----------------- | ------------------------------------ | ----------------------------------------- |
+| `agent_update`    | `agent`, `icon`, `summary`, `status` | Upsert agent status card by agent name    |
+| _(no type field)_ | `text`                               | Append string to last message's `content` |
 
 The backend `generate()` function in `api.py` serialises both types:
 
@@ -899,28 +913,28 @@ ws.onmessage                →  onInputChange(parsed.text) — populate input f
 recorder.onstop             →  ws.close()  (AFTER last ondataavailable)
 ```
 
-`ws.close()` lives in `recorder.onstop`, not in `stopRecording()`. This is a subtle timing issue: `MediaRecorder.stop()` is asynchronous — it fires `ondataavailable` with the final chunk *before* it fires `onstop`. Closing the socket in `stopRecording()` directly can drop that final chunk.
+`ws.close()` lives in `recorder.onstop`, not in `stopRecording()`. This is a subtle timing issue: `MediaRecorder.stop()` is asynchronous — it fires `ondataavailable` with the final chunk _before_ it fires `onstop`. Closing the socket in `stopRecording()` directly can drop that final chunk.
 
 ---
 
 ### 3. REST endpoints
 
-| Method | Path | Request | Response | Purpose |
-|--------|------|---------|----------|---------|
-| `POST` | `/api/chat` | `{message, model, rewrite_query}` | SSE stream | Chat with streaming response |
-| `GET` | `/api/history` | — | `{messages: [...]}` | Load conversation history |
-| `GET` | `/api/models` | — | `{models: [...]}` | Available Ollama models |
-| `GET` | `/api/status` | — | `{doc_count: N}` | Vector store chunk count |
-| `GET` | `/api/documents` | — | `{documents: [...]}` | Ingested files + chunk counts |
-| `POST` | `/api/upload` | `multipart/form-data` (file) | `{ok, doc_count}` | Ingest a document |
-| `GET` | `/api/files/{filename}` | — | File bytes | Serve uploaded file inline |
-| `POST` | `/api/reset` | — | `{ok: true}` | Clear conversation history |
-| `POST` | `/api/history/rollback` | — | `{ok: true}` | Remove orphaned last user turn |
-| `POST` | `/api/metrics/event` | `{event, user_id, properties}` | `{ok: true}` | Log analytics event |
-| `GET` | `/api/metrics/dau` | `?days=30` | `{dau: [...]}` | Daily active users |
-| `GET` | `/api/metrics/retention` | `?days=30` | `{retention: [...]}` | Day-7 retention by cohort |
-| `GET` | `/api/metrics/funnel` | — | `{funnel: [...]}` | Conversion funnel data |
-| `WS` | `/ws/transcribe` | binary audio frames | `{"text": "..."}` | Real-time Whisper transcription |
+| Method | Path                     | Request                           | Response             | Purpose                         |
+| ------ | ------------------------ | --------------------------------- | -------------------- | ------------------------------- |
+| `POST` | `/api/chat`              | `{message, model, rewrite_query}` | SSE stream           | Chat with streaming response    |
+| `GET`  | `/api/history`           | —                                 | `{messages: [...]}`  | Load conversation history       |
+| `GET`  | `/api/models`            | —                                 | `{models: [...]}`    | Available Ollama models         |
+| `GET`  | `/api/status`            | —                                 | `{doc_count: N}`     | Vector store chunk count        |
+| `GET`  | `/api/documents`         | —                                 | `{documents: [...]}` | Ingested files + chunk counts   |
+| `POST` | `/api/upload`            | `multipart/form-data` (file)      | `{ok, doc_count}`    | Ingest a document               |
+| `GET`  | `/api/files/{filename}`  | —                                 | File bytes           | Serve uploaded file inline      |
+| `POST` | `/api/reset`             | —                                 | `{ok: true}`         | Clear conversation history      |
+| `POST` | `/api/history/rollback`  | —                                 | `{ok: true}`         | Remove orphaned last user turn  |
+| `POST` | `/api/metrics/event`     | `{event, user_id, properties}`    | `{ok: true}`         | Log analytics event             |
+| `GET`  | `/api/metrics/dau`       | `?days=30`                        | `{dau: [...]}`       | Daily active users              |
+| `GET`  | `/api/metrics/retention` | `?days=30`                        | `{retention: [...]}` | Day-7 retention by cohort       |
+| `GET`  | `/api/metrics/funnel`    | —                                 | `{funnel: [...]}`    | Conversion funnel data          |
+| `WS`   | `/ws/transcribe`         | binary audio frames               | `{"text": "..."}`    | Real-time Whisper transcription |
 
 **Request model for `/api/chat`**
 
@@ -1006,4 +1020,4 @@ async def track_requests(request: Request, call_next):
 
 ---
 
-*Built by Srija Chatterjee · [GitHub](https://github.com/srijachatterjee19)*
+_Built by Srija Chatterjee · [GitHub](https://github.com/srijachatterjee19)_
