@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
-import ollama
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -124,21 +123,12 @@ async def track_requests(request: Request, call_next):
 
 class ChatRequest(BaseModel):
     message: str
-    model: str = "llama3.2"
+    model: str = "gpt-4o-mini"
     rewrite_query: bool = True
 
 
 def _get_chat_models() -> list[str]:
-    """Return Ollama models suitable for chat, excluding embedding-only models."""
-    try:
-        models = []
-        for m in ollama.list().models:
-            families = m.details.families or []
-            if not any("bert" in f for f in families):
-                models.append(m.model)
-        return models or ["llama3.2"]
-    except Exception:
-        return ["llama3.2"]
+    return ["gpt-4o-mini", "gpt-4o", "gpt-4.1"]
 
 
 @app.get("/api/history")
@@ -274,6 +264,19 @@ async def upload(request: Request, file: UploadFile = File(...)):
         },
     )
     return {"ok": True, "doc_count": doc_count}
+
+
+@app.delete("/api/documents/{filename}")
+def delete_document(filename: str):
+    """Remove a document's chunks from the vector store and delete the uploaded file."""
+    removed = _vector_store.delete_source(filename)
+    if removed == 0:
+        raise HTTPException(status_code=404, detail=f"Document '{filename}' not found in vector store.")
+    file_path = _UPLOADS_DIR / filename
+    if file_path.exists():
+        file_path.unlink()
+    logger.info("document deleted", extra={"event": "delete", "filename": filename, "chunks_removed": removed})
+    return {"ok": True, "chunks_removed": removed}
 
 
 @app.get("/api/files/{filename}")

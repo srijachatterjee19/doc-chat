@@ -1,4 +1,4 @@
-export default function Sidebar({ documents, uploading, fileInputRef, onUpload, onDocClick }) {
+export default function Sidebar({ documents, uploading, fileInputRef, onUpload, onDocClick, onDeleteDoc }) {
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -32,6 +32,11 @@ export default function Sidebar({ documents, uploading, fileInputRef, onUpload, 
                 <span className="doc-icon">{isPdf ? '📄' : '⬡'}</span>
                 <span className="doc-name">{doc.name}</span>
                 <span className="doc-chunks">{doc.chunks}</span>
+                <button
+                  className="doc-delete-btn"
+                  onClick={e => { e.stopPropagation(); onDeleteDoc(doc.name) }}
+                  title={`Remove ${doc.name}`}
+                >×</button>
               </div>
             )
           })

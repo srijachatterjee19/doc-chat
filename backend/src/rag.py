@@ -1,13 +1,27 @@
-import os
+import hashlib
+import logging
+import math
 import queue
 import threading
+from collections import OrderedDict
 from collections.abc import Generator
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_ollama import ChatOllama
+logger = logging.getLogger("rag")
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+
+from .embeddings import EmbeddingModel
 from .history import ChatHistory
 from .vector_store import VectorStore
+
+_embedder = EmbeddingModel()
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(x * x for x in b))
+    return dot / norm if norm else 0.0
 
 SYSTEM_PROMPT = """You are a helpful assistant that answers questions based on provided context documents.
 
@@ -46,12 +60,34 @@ def _humanize_summary(text: str, max_chars: int = 120) -> str:
 class RAGChatbot:
     """Multi-turn chatbot that grounds responses in retrieved document context."""
 
-    def __init__(self, vector_store: VectorStore, model: str = "llama3.2"):
+    _CACHE_MAX = 128
+
+    def __init__(self, vector_store: VectorStore, model: str = "gpt-4o-mini"):
         self._model = model
-        self._llm = ChatOllama(model=model)
+        self._llm = ChatOpenAI(model=model)
         self.vector_store = vector_store
         self._db = ChatHistory()
         self.history: list[dict] = self._db.load()
+        self._response_cache: OrderedDict[str, str] = OrderedDict()
+        self._sufficiency_cache: OrderedDict[str, bool] = OrderedDict()
+
+    def _cache_key(self, message: str) -> str:
+        doc_fingerprint = ",".join(sorted(s["name"] for s in self.vector_store.list_sources()))
+        return f"{message.strip().lower()}|{doc_fingerprint}"
+
+    def _get_cached(self, message: str) -> str | None:
+        key = self._cache_key(message)
+        if key in self._response_cache:
+            self._response_cache.move_to_end(key)
+            return self._response_cache[key]
+        return None
+
+    def _set_cached(self, message: str, response: str) -> None:
+        key = self._cache_key(message)
+        self._response_cache[key] = response
+        self._response_cache.move_to_end(key)
+        if len(self._response_cache) > self._CACHE_MAX:
+            self._response_cache.popitem(last=False)
 
     @property
     def model(self) -> str:
@@ -60,10 +96,10 @@ class RAGChatbot:
     @model.setter
     def model(self, value: str) -> None:
         self._model = value
-        self._llm = ChatOllama(model=value)
+        self._llm = ChatOpenAI(model=value)
 
     def _rewrite_query(self, user_message: str) -> str:
-        if not self.history:
+        if len(self.history) < 4:  # need at least 2 prior turns to rewrite meaningfully
             return user_message
         history_text = "\n".join(
             f"{m['role'].capitalize()}: {m['content']}" for m in self.history[-6:]
@@ -79,22 +115,59 @@ class RAGChatbot:
         return response.content.strip()
 
     def _retrieve_context(self, query: str, n_results: int = 3) -> tuple[str, str]:
-        docs = self.vector_store.similarity_search(query, k=n_results * 2)
+        sources = self.vector_store.list_sources()
+        source_list = ", ".join(s["name"] for s in sources) if sources else "none"
+        header = f"Available documents: {source_list}\n\n"
+
+        # If a specific ingested filename is mentioned, fetch all its chunks directly
+        query_lower = query.lower()
+        mentioned = next(
+            (s["name"] for s in sources if s["name"].lower() in query_lower), None
+        )
+        if mentioned:
+            chunks = self.vector_store.get_all_chunks_for_source(mentioned)
+            if chunks:
+                answer_ctx = header + "\n\n".join(
+                    f"[{mentioned} — chunk {i + 1}]\n{c}" for i, c in enumerate(chunks[:12])
+                )
+                return answer_ctx, ""
+
+        # Default: semantic similarity search
+        docs = self.vector_store.similarity_search_with_sources(query, k=n_results * 2)
         if not docs:
             return "", ""
         answer_docs = docs[:n_results]
         suggest_docs = docs[n_results:]
-        answer_ctx = "\n\n".join(f"[Document {i + 1}]\n{doc}" for i, doc in enumerate(answer_docs))
-        suggest_ctx = "\n\n".join(f"[Related {i + 1}]\n{doc}" for i, doc in enumerate(suggest_docs))
+        answer_ctx = header + "\n\n".join(
+            f"[{src} — chunk {i + 1}]\n{text}" for i, (text, src) in enumerate(answer_docs)
+        )
+        suggest_ctx = "\n\n".join(
+            f"[{src} — related {i + 1}]\n{text}" for i, (text, src) in enumerate(suggest_docs)
+        )
         return answer_ctx, suggest_ctx
 
-    def _build_messages(self, augmented_message: str) -> list:
+    def _history_is_relevant(self, current_message: str, threshold: float = 0.65) -> bool:
+        """Return True if the current message is semantically related to recent history."""
+        if not self.history:
+            return False
+        recent = " ".join(m["content"] for m in self.history[-4:])
+        try:
+            sim = _cosine(
+                _embedder.embed_single(current_message),
+                _embedder.embed_single(recent),
+            )
+            return sim >= threshold
+        except Exception:
+            return True  # fail open — include history if embedding fails
+
+    def _build_messages(self, augmented_message: str, use_history: bool = True) -> list:
         messages = [SystemMessage(content=SYSTEM_PROMPT)]
-        for m in self.history:
-            if m["role"] == "user":
-                messages.append(HumanMessage(content=m["content"]))
-            elif m["role"] == "assistant":
-                messages.append(AIMessage(content=m["content"]))
+        if use_history:
+            for m in self.history[:-1]:  # exclude the pending user turn
+                if m["role"] == "user":
+                    messages.append(HumanMessage(content=m["content"]))
+                elif m["role"] == "assistant":
+                    messages.append(AIMessage(content=m["content"]))
         messages.append(HumanMessage(content=augmented_message))
         return messages
 
@@ -102,11 +175,18 @@ class RAGChatbot:
         """Quick YES/NO check: can the retrieved context answer the question?"""
         if not context:
             return False
+        key = hashlib.md5(f"{question.strip().lower()}|{context}".encode()).hexdigest()
+        if key in self._sufficiency_cache:
+            return self._sufficiency_cache[key]
         response = self._llm.invoke([
             SystemMessage(content="You decide if provided context can answer a question. Reply only YES or NO."),
             HumanMessage(content=f"Context:\n{context}\n\nQuestion: {question}"),
         ])
-        return "yes" in response.content.strip().lower()
+        result = "yes" in response.content.strip().lower()
+        self._sufficiency_cache[key] = result
+        if len(self._sufficiency_cache) > 256:
+            self._sufficiency_cache.popitem(last=False)
+        return result
 
     def _make_doc_search_tool(self):
         """Return a CrewAI tool that queries the chatbot's own vector store."""
@@ -163,7 +243,7 @@ class RAGChatbot:
             update_queue.put({"type": "agent_update", "agent": "Web Researcher", "icon": "🌐", "summary": summary, "status": "done"})
             update_queue.put({"type": "agent_update", "agent": "Synthesizer", "icon": "🔀", "summary": "Combining results…", "status": "working"})
 
-        def on_synth_done(output):
+        def on_synth_done(_output):
             update_queue.put({"type": "agent_update", "agent": "Synthesizer", "icon": "🔀", "summary": "Response ready.", "status": "done"})
 
         synth_agent = Agent(
@@ -246,16 +326,43 @@ class RAGChatbot:
         result = crew.kickoff(inputs={"query": query})
         return result.raw
 
+    _DOC_PHRASES = frozenset({
+        "my doc", "my document", "my file", "my upload", "the document", "the file",
+        "summarize", "summarise", "summarise", "what's in", "what is in",
+        "tell me about", "overview of", "contents of",
+    })
+
+    def _is_about_uploaded_docs(self, message: str) -> bool:
+        """Return True if the message is asking about the user's own uploaded documents."""
+        msg = message.lower()
+        if any(phrase in msg for phrase in self._DOC_PHRASES):
+            return True
+        ingested = {s["name"].lower() for s in self.vector_store.list_sources()}
+        return any(name in msg for name in ingested)
+
     def stream(self, user_message: str, rewrite_query: bool = True) -> Generator:
         """Yield agent_update dicts then text dicts. Caller must call commit() after."""
-        self._db.append("user", user_message)
+        cached = self._get_cached(user_message)
+        if cached:
+            logger.info("cache hit: %r", user_message[:60])
+            yield from _stream_text(cached)
+            return
+        logger.info("cache miss: %r", user_message[:60])
 
-        retrieval_query = self._rewrite_query(user_message) if rewrite_query else user_message
+        use_history = self._history_is_relevant(user_message)
+        retrieval_query = (
+            self._rewrite_query(user_message)
+            if (rewrite_query and use_history)
+            else user_message
+        )
         context, related = self._retrieve_context(retrieval_query)
+        about_docs = self._is_about_uploaded_docs(user_message)
 
         if not context:
-            use_doc, use_web = False, True
-        elif self._context_is_sufficient(user_message, context):
+            # Nothing retrieved — web search only (unless they're asking about their docs,
+            # in which case the doc agent will explain nothing was found)
+            use_doc, use_web = (True, False) if about_docs else (False, True)
+        elif about_docs or self._context_is_sufficient(user_message, context):
             use_doc, use_web = True, False
         else:
             use_doc, use_web = True, True
@@ -283,7 +390,7 @@ class RAGChatbot:
 
         t.join()
 
-        crew_response = result_holder[0]
+        crew_response = (result_holder[0] or "").strip()
         if crew_response:
             yield from _stream_text(crew_response)
             return
@@ -300,14 +407,18 @@ class RAGChatbot:
         else:
             augmented_message = user_message
 
-        for chunk in self._llm.stream(self._build_messages(augmented_message)):
+        for chunk in self._llm.stream(self._build_messages(augmented_message, use_history=use_history)):
             yield chunk.content
 
     def commit(self, user_message: str, assistant_response: str) -> None:
         self.history.append({"role": "user", "content": user_message})
         self.history.append({"role": "assistant", "content": assistant_response})
+        self._db.append("user", user_message)
         self._db.append("assistant", assistant_response)
+        self._set_cached(user_message, assistant_response)
 
     def reset(self) -> None:
         self.history = []
         self._db.clear()
+        self._response_cache.clear()
+        self._sufficiency_cache.clear()

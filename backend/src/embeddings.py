@@ -1,24 +1,22 @@
-import ollama
 from functools import lru_cache
+from openai import OpenAI
+
+_client = OpenAI()
+_MODEL = "text-embedding-3-small"
 
 
 @lru_cache(maxsize=512)
-def _embed_cached(model: str, text: str) -> tuple[float, ...]:
-    response = ollama.embed(model=model, input=text)
-    return tuple(response.embeddings[0])
+def _embed_cached(text: str) -> tuple[float, ...]:
+    response = _client.embeddings.create(model=_MODEL, input=text)
+    return tuple(response.data[0].embedding)
 
 
 class EmbeddingModel:
-    """Wraps an Ollama embedding model to produce vector representations of text."""
-
-    def __init__(self, model: str = "nomic-embed-text"):
-        self.model = model
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        """Return one embedding vector per input string."""
-        response = ollama.embed(model=self.model, input=texts)
-        return response.embeddings
+    """Wraps OpenAI's embedding API to produce vector representations of text."""
 
     def embed_single(self, text: str) -> list[float]:
-        """Return a single embedding vector for one string."""
-        return list(_embed_cached(self.model, text))
+        return list(_embed_cached(text))
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        response = _client.embeddings.create(model=_MODEL, input=texts)
+        return [d.embedding for d in response.data]

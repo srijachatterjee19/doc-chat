@@ -127,6 +127,14 @@ function ChatApp() {
     track('clear_conversation')
   }
 
+  async function handleDeleteDoc(filename) {
+    const res = await fetch(`/api/documents/${encodeURIComponent(filename)}`, { method: 'DELETE' })
+    if (res.ok) {
+      track('delete_document', { filename })
+      await refreshDocuments()
+    }
+  }
+
   async function handleUpload(e) {
     const file = e.target.files[0]
     if (!file) return
@@ -162,6 +170,7 @@ function ChatApp() {
         fileInputRef={fileInputRef}
         onUpload={handleUpload}
         onDocClick={name => setInput(`What is ${name} about?`)}
+        onDeleteDoc={handleDeleteDoc}
       />
       <main className="chat">
         <ChatHeader

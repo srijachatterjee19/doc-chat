@@ -1,6 +1,6 @@
 from collections import OrderedDict
 from langchain_chroma import Chroma
-from langchain_ollama import OllamaEmbeddings
+from langchain_openai import OpenAIEmbeddings
 
 _SEARCH_CACHE_MAXSIZE = 128
 
@@ -12,12 +12,11 @@ class VectorStore:
         self,
         persist_directory: str = "./chroma_db",
         collection_name: str = "documents",
-        embedding_model: str = "nomic-embed-text",
     ):
         self._store = Chroma(
             persist_directory=persist_directory,
             collection_name=collection_name,
-            embedding_function=OllamaEmbeddings(model=embedding_model),
+            embedding_function=OpenAIEmbeddings(model="text-embedding-3-small"),
             collection_metadata={"hnsw:space": "cosine"},
         )
         self._search_cache: OrderedDict[tuple, list[str]] = OrderedDict()
@@ -34,7 +33,11 @@ class VectorStore:
 
     def similarity_search(self, query: str, k: int = 3) -> list[str]:
         """Return the top-k most similar document chunks for the query."""
-        key = (query, k)
+        return [text for text, _ in self.similarity_search_with_sources(query, k)]
+
+    def similarity_search_with_sources(self, query: str, k: int = 3) -> list[tuple[str, str]]:
+        """Return the top-k chunks as (text, source_filename) pairs."""
+        key = ("ws", query, k)
         if key in self._search_cache:
             self._search_cache.move_to_end(key)
             return self._search_cache[key]
@@ -42,7 +45,7 @@ class VectorStore:
             if self.count() == 0:
                 return []
             docs = self._store.similarity_search(query, k=min(k, self.count()))
-            result = [doc.page_content for doc in docs]
+            result = [(doc.page_content, doc.metadata.get("source", "unknown")) for doc in docs]
         except Exception:
             return []
         self._search_cache[key] = result
@@ -50,10 +53,30 @@ class VectorStore:
             self._search_cache.popitem(last=False)
         return result
 
+    def get_all_chunks_for_source(self, source_name: str) -> list[str]:
+        """Return all text chunks for a source file, ordered by chunk index."""
+        result = self._store._collection.get(
+            where={"source": {"$eq": source_name}},
+            include=["documents", "metadatas"],
+        )
+        if not result["ids"]:
+            return []
+        pairs = list(zip(result["metadatas"], result["documents"]))
+        pairs.sort(key=lambda x: x[0].get("chunk", 0))
+        return [doc for _, doc in pairs]
+
     def get_ids_for_source(self, source_name: str) -> list[str]:
         """Return all chunk IDs stored under a given source filename."""
         result = self._store._collection.get(where={"source": {"$eq": source_name}})
         return result["ids"]
+
+    def delete_source(self, source_name: str) -> int:
+        """Delete all chunks for a given source file. Returns the number of chunks removed."""
+        ids = self.get_ids_for_source(source_name)
+        if ids:
+            self._store._collection.delete(ids=ids)
+            self._search_cache.clear()
+        return len(ids)
 
     def delete_all(self) -> None:
         """Delete every chunk from the collection."""

@@ -121,62 +121,6 @@ Commands: `reset` to clear history, `quit` to exit.
 
 ---
 
-## Evals
-
-Quality evaluation for the RAG pipeline using [RAGAS](https://docs.ragas.io/) with your local Ollama model as the judge — no OpenAI key required.
-
-### Install eval dependencies
-
-```bash
-pip install ragas datasets
-```
-
-### Add your test cases
-
-Edit `evals/questions.json` with questions that your ingested documents can answer:
-
-```json
-[
-  {
-    "question": "What is the refund policy?",
-    "ground_truth": "30-day full refund, no questions asked."
-  },
-  {
-    "question": "How do I reset my password?",
-    "ground_truth": "Click Forgot Password on the login page and follow the email link."
-  }
-]
-```
-
-`ground_truth` is optional for `faithfulness` and `answer_relevancy`, but required to also score `context_precision`.
-
-### Run
-
-```bash
-python -m evals.run
-```
-
-```bash
-# Options
-python -m evals.run --model llama3.2          # Ollama model to use (default: llama3.2)
-python -m evals.run --k 5                     # chunks retrieved per question (default: 3)
-python -m evals.run --output evals/results.json  # save results to JSON
-```
-
-### Metrics
-
-| Metric | What it measures | Ground truth needed? |
-|--------|-----------------|----------------------|
-| Faithfulness | Answer stays within the retrieved context (no hallucination) | No |
-| Answer Relevancy | Answer actually addresses the question | No |
-| Context Precision | Retrieved chunks are relevant to the question | Yes |
-
-Scores range from 0 to 1. Results are colour-coded in the terminal: green ≥ 0.7, yellow ≥ 0.4, red < 0.4.
-
-Run evals whenever you change chunk size, the system prompt, or the retrieval `k` value to catch regressions.
-
----
-
 ## Project structure
 
 ```
@@ -192,9 +136,6 @@ rag-chatbot/
 │       ├── rag.py         # RAGChatbot — retrieval + multi-agent streaming chat
 │       ├── vector_store.py # LangChain Chroma wrapper with LRU cache
 │       └── embeddings.py  # Ollama embedding model wrapper
-├── evals/
-│   ├── run.py             # RAGAS eval harness
-│   └── questions.json     # Test cases (question + ground_truth pairs)
 ├── frontend/              # React + Vite UI
 │   ├── src/
 │   │   ├── App.jsx
@@ -222,20 +163,24 @@ rag-chatbot/
 ### Full pipeline
 
 ```
-User message (text or voice)
+User message
         │
         ▼
- 1. Query rewriting          (Ollama — standalone search query from conversation history)
+ 0. History relevance check  (cosine similarity — is this a follow-up or a new topic?)
+        │
+        ├─ Related  ──▶  1a. Query rewriting  (Ollama — expand with conversation history)
+        └─ New topic ──▶  1b. Use message as-is (history skipped)
         │
         ▼
- 2. Vector store retrieval   (ChromaDB cosine similarity — top 6 chunks)
+ 2. Retrieval                (ChromaDB — direct fetch if filename mentioned, else top-6 similarity)
         │
         ▼
- 3. Routing decision         (Ollama — YES/NO: can these chunks answer the question?)
+ 3. Routing decision         (Ollama YES/NO + doc-query detection)
         │
-        ├─ Docs sufficient  ──▶  4a. Doc Analyst + Synthesizer
+        ├─ Doc query         ──▶  4a. Doc Analyst only  (never web search)
+        ├─ Docs sufficient   ──▶  4a. Doc Analyst + Synthesizer
         ├─ Docs insufficient ──▶  4b. Doc Analyst + Web Researcher + Synthesizer
-        └─ No docs at all   ──▶  4c. Web Researcher + Synthesizer
+        └─ No docs at all    ──▶  4c. Web Researcher + Synthesizer
         │
         ▼
  5. Streaming response       (SSE — agent status cards first, then final answer)
@@ -243,40 +188,59 @@ User message (text or voice)
 
 ---
 
+### 0 — History relevance check (`_history_is_relevant`)
+
+Before anything else, the current message is compared to the last 4 history messages using cosine similarity on `nomic-embed-text` embeddings.
+
+| Similarity | Behaviour |
+|-----------|-----------|
+| ≥ 0.65 | Related topic — history included in prompt, query rewriting enabled |
+| < 0.65 | New topic — history dropped, query rewriting skipped, fresh answer only |
+
+This prevents stale conversation context from polluting unrelated questions. The threshold can be tuned in `_history_is_relevant`.
+
+---
+
 ### 1 — Query rewriting (`_rewrite_query`)
 
-Before hitting the vector store, the user's message is rewritten into a self-contained search query using the last 6 turns of conversation history. This makes follow-up questions like *"what about the visual side?"* or *"give me an example of each"* retrievable on their own.
+Only runs when the history relevance check passes. Rewrites the user's message into a self-contained search query using the last 6 turns of history, so follow-up questions like *"what about the visual side?"* are retrievable on their own.
 
-- Uses the local Ollama model (same one selected in the UI)
-- Skipped on the first turn (no history yet)
+- Skipped entirely when the current question is a new topic
 - Only the rewritten query hits ChromaDB — the original message is still used in the final prompt
 
 ---
 
 ### 2 — Retrieval (`_retrieve_context`)
 
-Fetches `2 × n` chunks (default `n = 3`) from ChromaDB via cosine similarity:
+Two strategies depending on the query:
+
+**Filename mentioned** — if the user references an ingested document by name (e.g. "summarise sample.txt"), all chunks for that file are fetched directly from ChromaDB by metadata filter, ordered by chunk index. Semantic search is bypassed entirely.
+
+**General query** — fetches `2 × n` chunks (default `n = 3`) via cosine similarity:
 
 | Slice | Purpose |
 |-------|---------|
 | Top 3 | Injected as answer context |
 | Next 3 | Used as seeds for follow-up suggestions |
 
-The second slice lets the LLM generate follow-up questions that map to real document content rather than generic guesses.
+Every chunk is labeled with its source filename (e.g. `[report.pdf — chunk 2]`) and a header lists all available documents, so the LLM knows exactly which file each piece of content came from.
 
 ---
 
-### 3 — Routing decision (`_context_is_sufficient`)
+### 3 — Routing decision (`_context_is_sufficient` + `_is_about_uploaded_docs`)
 
-A fast non-streaming Ollama call asks: *"Can this context answer this question? YES or NO."*
+Two checks run in sequence:
+
+**Doc-query detection** — checks whether the message mentions an ingested filename or contains phrases like "summarise", "what's in", "my document". If yes, web search is disabled regardless of the sufficiency check.
+
+**Sufficiency check** — a fast non-streaming Ollama call asks: *"Can this context answer this question? YES or NO."*
 
 | Condition | Result |
 |-----------|--------|
+| Question is about uploaded docs | `use_doc=True, use_web=False` always |
 | No chunks retrieved | `use_doc=False, use_web=True` |
 | Chunks retrieved, model says YES | `use_doc=True, use_web=False` |
 | Chunks retrieved, model says NO | `use_doc=True, use_web=True` |
-
-This prevents unnecessary Google Search API calls when the documents already have a good answer, and avoids wasting the Document Analyst agent when there are no documents at all.
 
 ---
 

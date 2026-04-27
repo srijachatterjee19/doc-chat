@@ -176,6 +176,27 @@ body {
   padding: 1px 7px;
 }
 
+.doc-delete-btn {
+  display: none;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  border-radius: 4px;
+}
+
+.doc-item:hover .doc-delete-btn {
+  display: block;
+}
+
+.doc-delete-btn:hover {
+  color: #f87171;
+}
+
 /* ── Chat area ── */
 
 .chat {

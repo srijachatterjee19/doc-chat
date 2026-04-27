@@ -16,24 +16,21 @@ import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from .src.vector_store import VectorStore
 
 load_dotenv()
 
 
-def chunk_text(text: str, chunk_size: int = 200, overlap: int = 20) -> list[str]:
-    """Split text into overlapping word-count chunks."""
-    words = text.split()
-    chunks = []
-    i = 0
-    while i < len(words):
-        chunk = " ".join(words[i : i + chunk_size])
-        chunks.append(chunk)
-        # Step forward by (chunk_size - overlap) so the next chunk
-        # re-uses the last `overlap` words, preserving cross-boundary context.
-        i += chunk_size - overlap
-    return [c for c in chunks if c.strip()]
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:
+    """Split text into overlapping chunks, respecting paragraph and sentence boundaries."""
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=overlap,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+    return [c for c in splitter.split_text(text) if c.strip()]
 
 
 def read_file(path: Path) -> str:
@@ -48,8 +45,8 @@ def read_file(path: Path) -> str:
 def ingest_file(
     filepath: str,
     vector_store: VectorStore,
-    chunk_size: int = 200,
-    overlap: int = 20,
+    chunk_size: int = 1000,
+    overlap: int = 200,
 ) -> None:
     """Chunk a file and store the chunks in the vector store (embeddings handled internally)."""
     path = Path(filepath)
@@ -77,8 +74,8 @@ def main() -> None:
     )
     parser.add_argument("files", nargs="*", help="Files to ingest (.txt, .md, .pdf)")
     parser.add_argument("--clear", action="store_true", help="Clear all stored chunks before ingesting")
-    parser.add_argument("--chunk-size", type=int, default=200, help="Words per chunk (default: 200)")
-    parser.add_argument("--overlap", type=int, default=20, help="Overlapping words between chunks (default: 20)")
+    parser.add_argument("--chunk-size", type=int, default=1000, help="Characters per chunk (default: 1000)")
+    parser.add_argument("--overlap", type=int, default=200, help="Overlapping characters between chunks (default: 200)")
     args = parser.parse_args()
 
     vector_store = VectorStore()
