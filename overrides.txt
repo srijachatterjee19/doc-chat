@@ -1,0 +1,4 @@
+# These override crewai's stated dependency constraints.
+# The local venv proves these versions are runtime-compatible with crewai==1.9.3.
+chromadb==1.5.8
+python-dotenv==1.0.1
