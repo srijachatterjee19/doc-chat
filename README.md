@@ -85,4 +85,6 @@ Agent status updates and response text both stream over Server-Sent Events. The 
 
 Every HTTP request and chat completion is logged as newline-delimited JSON, including `first_token_ms` and `total_stream_ms` for latency visibility. Pipe directly into any log aggregator without a parsing step.
 
----
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
