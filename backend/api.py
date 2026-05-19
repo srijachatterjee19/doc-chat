@@ -9,6 +9,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -36,8 +38,6 @@ def _contains_profanity(text: str) -> bool:
 from .src.rag import RAGChatbot
 from .src.vector_store import VectorStore
 from .src.analytics import init_db, log_event, get_dau, get_retention, get_funnel
-
-load_dotenv()
 
 limiter = Limiter(key_func=get_remote_address)
 
