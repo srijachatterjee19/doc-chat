@@ -85,6 +85,43 @@ Agent status updates and response text both stream over Server-Sent Events. The 
 
 Every HTTP request and chat completion is logged as newline-delimited JSON, including `first_token_ms` and `total_stream_ms` for latency visibility. Pipe directly into any log aggregator without a parsing step.
 
+### Daily token budget
+
+A hard cap on OpenAI token usage resets every day at midnight. Set the limit in `.env`:
+
+```
+DAILY_TOKEN_LIMIT=100000   # default: 100,000 tokens/day
+```
+
+Once the limit is hit, chat requests return a message instead of calling OpenAI. Token counts are captured across all LangChain and CrewAI agent calls using `get_openai_callback()`, with context propagated into background threads via `contextvars.copy_context()`.
+
+Check current usage at any time:
+
+```
+GET /api/budget
+→ { "tokens_used": 4821, "daily_limit": 100000, "remaining": 95179, "date": "2026-05-19" }
+```
+
+## Cost considerations
+
+All LLM calls use `gpt-4o-mini` ($0.15/1M input tokens, $0.60/1M output tokens). Embeddings use `text-embedding-3-small` ($0.02/1M tokens — negligible).
+
+**Per request:** a typical chat turn (query rewriting + sufficiency check + up to 3 CrewAI agents) uses roughly 5,000–10,000 tokens, costing ~$0.002–0.004.
+
+**To stay under $2/month** with daily use, set:
+
+```
+DAILY_TOKEN_LIMIT=200000
+```
+
+This allows ~20–25 requests/day and caps spend at ~$1.50–1.80/month at worst. The budget resets at midnight and is visible at `GET /api/budget`.
+
+| Daily limit | Max requests/day | Approx monthly cost |
+| ----------- | ---------------- | ------------------- |
+| `50000`     | ~5–8             | ~$0.45              |
+| `100000`    | ~10–15           | ~$0.90              |
+| `200000`    | ~20–25           | ~$1.80              |
+
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.

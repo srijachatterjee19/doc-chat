@@ -13,12 +13,14 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from langchain_community.callbacks import get_openai_callback
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from .ingest import ingest_file, read_file
+from .src import budget
 
 _BLOCKED_TERMS: frozenset[str] = frozenset({
     "fuck", "fucking", "fucker", "shit", "bitch", "cunt", "dick", "pussy",
@@ -143,6 +145,12 @@ def status():
     return {"doc_count": _vector_store.count()}
 
 
+@app.get("/api/budget")
+def budget_status():
+    """Return today's token usage against the daily limit."""
+    return budget.status()
+
+
 @app.get("/api/documents")
 def documents():
     """Return all ingested source files and their chunk counts."""
@@ -169,38 +177,46 @@ def chat(request: Request, body: ChatRequest):
             yield f"data: {json.dumps({'text': msg})}\n\ndata: [DONE]\n\n"
             return
 
+        if budget.is_over_limit():
+            s = budget.status()
+            msg = f"Daily token limit of {s['daily_limit']:,} reached ({s['tokens_used']:,} used). Try again tomorrow."
+            yield f"data: {json.dumps({'text': msg})}\n\ndata: [DONE]\n\n"
+            return
+
         full_response = ""
         stream_start = time.perf_counter()
         first_token_ms: float | None = None
-        for chunk in _chatbot.stream(body.message, rewrite_query=body.rewrite_query):
-            if isinstance(chunk, dict):
-                chunk_type = chunk.get("type")
-                if chunk_type == "agent_update":
-                    yield f"data: {json.dumps(chunk)}\n\n"
-                elif chunk_type == "text":
+        with get_openai_callback() as cb:
+            for chunk in _chatbot.stream(body.message, rewrite_query=body.rewrite_query):
+                if isinstance(chunk, dict):
+                    chunk_type = chunk.get("type")
+                    if chunk_type == "agent_update":
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    elif chunk_type == "text":
+                        if first_token_ms is None:
+                            first_token_ms = round((time.perf_counter() - stream_start) * 1000, 1)
+                        full_response += chunk["text"]
+                        yield f"data: {json.dumps({'text': chunk['text']})}\n\n"
+                else:
                     if first_token_ms is None:
                         first_token_ms = round((time.perf_counter() - stream_start) * 1000, 1)
-                    full_response += chunk["text"]
-                    yield f"data: {json.dumps({'text': chunk['text']})}\n\n"
-            else:
-                # Ollama fallback yields raw strings
-                if first_token_ms is None:
-                    first_token_ms = round((time.perf_counter() - stream_start) * 1000, 1)
-                full_response += chunk
-                yield f"data: {json.dumps({'text': chunk})}\n\n"
-        if full_response:
-            _chatbot.commit(body.message, full_response)
-            logger.info(
-                "chat completed",
-                extra={
-                    "event": "chat",
-                    "model": body.model,
-                    "message_chars": len(body.message),
-                    "response_chars": len(full_response),
-                    "first_token_ms": first_token_ms,
-                    "total_stream_ms": round((time.perf_counter() - stream_start) * 1000, 1),
-                },
-            )
+                    full_response += chunk
+                    yield f"data: {json.dumps({'text': chunk})}\n\n"
+            if full_response:
+                _chatbot.commit(body.message, full_response)
+                logger.info(
+                    "chat completed",
+                    extra={
+                        "event": "chat",
+                        "model": body.model,
+                        "message_chars": len(body.message),
+                        "response_chars": len(full_response),
+                        "first_token_ms": first_token_ms,
+                        "total_stream_ms": round((time.perf_counter() - stream_start) * 1000, 1),
+                        "tokens_used": cb.total_tokens,
+                    },
+                )
+        budget.add_tokens(cb.total_tokens)
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

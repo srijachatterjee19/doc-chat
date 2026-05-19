@@ -1,3 +1,4 @@
+import contextvars
 import hashlib
 import logging
 import math
@@ -378,7 +379,8 @@ class RAGChatbot:
             finally:
                 update_queue.put(None)  # sentinel
 
-        t = threading.Thread(target=run_crew, daemon=True)
+        ctx = contextvars.copy_context()
+        t = threading.Thread(target=ctx.run, args=(run_crew,), daemon=True)
         t.start()
 
         # Yield agent updates in real-time as crew works

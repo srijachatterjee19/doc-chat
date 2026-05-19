@@ -1,13 +1,20 @@
 from functools import lru_cache
 from openai import OpenAI
 
-_client = OpenAI()
+_client: OpenAI | None = None
 _MODEL = "text-embedding-3-small"
+
+
+def _get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        _client = OpenAI()
+    return _client
 
 
 @lru_cache(maxsize=512)
 def _embed_cached(text: str) -> tuple[float, ...]:
-    response = _client.embeddings.create(model=_MODEL, input=text)
+    response = _get_client().embeddings.create(model=_MODEL, input=text)
     return tuple(response.data[0].embedding)
 
 
@@ -18,5 +25,5 @@ class EmbeddingModel:
         return list(_embed_cached(text))
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        response = _client.embeddings.create(model=_MODEL, input=texts)
+        response = _get_client().embeddings.create(model=_MODEL, input=texts)
         return [d.embedding for d in response.data]
