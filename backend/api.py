@@ -346,4 +346,12 @@ def sandbox_subscribe():
 # Serve the production React build when it exists
 _static_dir = Path(__file__).parent.parent / "frontend" / "dist"
 if _static_dir.exists():
-    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="static")
+    from fastapi.responses import FileResponse as _FileResponse
+
+    _assets_dir = _static_dir / "assets"
+    if _assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        return _FileResponse(str(_static_dir / "index.html"))

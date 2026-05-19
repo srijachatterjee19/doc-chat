@@ -16,11 +16,7 @@ export default function ChatHeader({ docCount, documents, theme, onToggleTheme, 
 
   return (
     <div className="chat-header">
-      {docCount === 0 ? (
-        <span className="header-warning">
-          No documents loaded — run: <code>python ingest.py data/sample.txt</code>
-        </span>
-      ) : (
+      {docCount > 0 && (
         <span className="header-doc-count">
           {docCount} chunks across {documents.length} file{documents.length !== 1 ? 's' : ''}
         </span>
