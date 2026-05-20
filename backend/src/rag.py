@@ -63,11 +63,11 @@ class RAGChatbot:
 
     _CACHE_MAX = 128
 
-    def __init__(self, vector_store: VectorStore, model: str = "gpt-4o-mini"):
+    def __init__(self, vector_store: VectorStore, model: str = "gpt-4o-mini", history_path=None):
         self._model = model
         self._llm = ChatOpenAI(model=model)
         self.vector_store = vector_store
-        self._db = ChatHistory()
+        self._db = ChatHistory(path=history_path) if history_path else ChatHistory()
         self.history: list[dict] = self._db.load()
         self._response_cache: OrderedDict[str, str] = OrderedDict()
         self._sufficiency_cache: OrderedDict[str, bool] = OrderedDict()

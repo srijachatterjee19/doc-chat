@@ -10,6 +10,15 @@ import SignupPage from './components/SignupPage'
 import PricingPage from './components/PricingPage'
 import LandingPage from './components/LandingPage'
 
+function getSessionId() {
+  let id = localStorage.getItem('sessionId')
+  if (!id) {
+    id = crypto.randomUUID()
+    localStorage.setItem('sessionId', id)
+  }
+  return id
+}
+
 function getInitialTheme() {
   const stored = localStorage.getItem('theme')
   if (stored) return stored
@@ -50,12 +59,12 @@ function ChatApp() {
 
   useEffect(() => {
     refreshDocuments()
-    fetch('/api/history')
+    fetch(`/api/history?session_id=${getSessionId()}`)
       .then(r => r.json())
       .then(d => {
         const msgs = d.messages
         if (msgs.length > 0 && msgs[msgs.length - 1].role === 'user') {
-          fetch('/api/history/rollback', { method: 'POST' })
+          fetch(`/api/history/rollback?session_id=${getSessionId()}`, { method: 'POST' })
           setInterrupted(true)
         }
         setMessages(msgs)
@@ -76,7 +85,7 @@ function ChatApp() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMsg }),
+        body: JSON.stringify({ message: userMsg, session_id: getSessionId() }),
       })
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
@@ -122,7 +131,7 @@ function ChatApp() {
   }
 
   async function clearConversation() {
-    await fetch('/api/reset', { method: 'POST' })
+    await fetch(`/api/reset?session_id=${getSessionId()}`, { method: 'POST' })
     setMessages([])
     track('clear_conversation')
   }

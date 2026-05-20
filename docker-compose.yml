@@ -8,10 +8,12 @@ services:
     volumes:
       - chroma_data:/app/chroma_db
       - uploads_data:/app/uploads
-      - history_data:/app/chat_history.json
+      - history_data:/app/history
+      - budget_data:/app/budget
     restart: unless-stopped
 
 volumes:
   chroma_data:
   uploads_data:
   history_data:
+  budget_data:

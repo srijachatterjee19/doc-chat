@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -19,7 +20,6 @@ from langchain_community.callbacks import get_openai_callback
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
 from .ingest import ingest_file, read_file
 from .src import budget
@@ -39,7 +39,48 @@ from .src.rag import RAGChatbot
 from .src.vector_store import VectorStore
 from .src.analytics import init_db, log_event, get_dau, get_retention, get_funnel
 
-limiter = Limiter(key_func=get_remote_address)
+def _real_ip(request: Request) -> str:
+    return (
+        request.headers.get("X-Real-IP")
+        or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
+
+limiter = Limiter(key_func=_real_ip)
+
+_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_MAX_SESSIONS = 200
+_HISTORY_DIR = Path(__file__).parent.parent / "history"
+
+
+def _valid_session_id(sid: str) -> bool:
+    return bool(sid and _SESSION_ID_RE.match(sid))
+
+
+class _SessionStore:
+    def __init__(self, vector_store: VectorStore):
+        self._vector_store = vector_store
+        self._sessions: OrderedDict[str, RAGChatbot] = OrderedDict()
+
+    def get(self, session_id: str) -> RAGChatbot:
+        if not _valid_session_id(session_id):
+            session_id = "anonymous"
+        if session_id in self._sessions:
+            self._sessions.move_to_end(session_id)
+            return self._sessions[session_id]
+        _HISTORY_DIR.mkdir(exist_ok=True)
+        bot = RAGChatbot(
+            self._vector_store,
+            history_path=_HISTORY_DIR / f"{session_id}.json",
+        )
+        self._sessions[session_id] = bot
+        if len(self._sessions) > _MAX_SESSIONS:
+            self._sessions.popitem(last=False)
+        return bot
+
+    def reset(self, session_id: str) -> None:
+        if _valid_session_id(session_id) and session_id in self._sessions:
+            self._sessions[session_id].reset()
 
 
 # --- Structured JSON logging ---
@@ -75,15 +116,15 @@ logger.addHandler(_handler)
 logger.propagate = False
 
 _vector_store: VectorStore
-_chatbot: RAGChatbot
+_sessions: _SessionStore
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global _vector_store, _chatbot
+    global _vector_store, _sessions
     init_db()
     _vector_store = VectorStore()
-    _chatbot = RAGChatbot(_vector_store)
+    _sessions = _SessionStore(_vector_store)
     yield
 
 
@@ -125,6 +166,7 @@ async def track_requests(request: Request, call_next):
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: str = ""
     model: str = "gpt-4o-mini"
     rewrite_query: bool = True
 
@@ -134,9 +176,9 @@ def _get_chat_models() -> list[str]:
 
 
 @app.get("/api/history")
-def history():
+def history(session_id: str = ""):
     """Return the persisted conversation history."""
-    return {"messages": _chatbot.history}
+    return {"messages": _sessions.get(session_id).history}
 
 
 @app.get("/api/status")
@@ -167,9 +209,10 @@ def models():
 @limiter.limit("20/minute")
 def chat(request: Request, body: ChatRequest):
     """Stream a RAG-augmented chat response as SSE."""
-    if _chatbot.model != body.model:
-        _chatbot.model = body.model
-        _chatbot.reset()
+    chatbot = _sessions.get(body.session_id)
+    if chatbot.model != body.model:
+        chatbot.model = body.model
+        chatbot.reset()
 
     def generate():
         if _contains_profanity(body.message):
@@ -187,7 +230,7 @@ def chat(request: Request, body: ChatRequest):
         stream_start = time.perf_counter()
         first_token_ms: float | None = None
         with get_openai_callback() as cb:
-            for chunk in _chatbot.stream(body.message, rewrite_query=body.rewrite_query):
+            for chunk in chatbot.stream(body.message, rewrite_query=body.rewrite_query):
                 if isinstance(chunk, dict):
                     chunk_type = chunk.get("type")
                     if chunk_type == "agent_update":
@@ -203,11 +246,12 @@ def chat(request: Request, body: ChatRequest):
                     full_response += chunk
                     yield f"data: {json.dumps({'text': chunk})}\n\n"
             if full_response:
-                _chatbot.commit(body.message, full_response)
+                chatbot.commit(body.message, full_response)
                 logger.info(
                     "chat completed",
                     extra={
                         "event": "chat",
+                        "session_id": body.session_id,
                         "model": body.model,
                         "message_chars": len(body.message),
                         "response_chars": len(full_response),
@@ -224,18 +268,19 @@ def chat(request: Request, body: ChatRequest):
 
 @app.post("/api/reset")
 @limiter.limit("10/minute")
-def reset(request: Request):
+def reset(request: Request, session_id: str = ""):
     """Clear the chatbot's conversation history."""
-    _chatbot.reset()
+    _sessions.reset(session_id)
     return {"ok": True}
 
 
 @app.post("/api/history/rollback")
-def history_rollback():
+def history_rollback(session_id: str = ""):
     """Remove the last message when it is an orphaned user turn with no assistant reply."""
-    _chatbot._db.rollback_last()
-    if _chatbot.history and _chatbot.history[-1]["role"] == "user":
-        _chatbot.history.pop()
+    chatbot = _sessions.get(session_id)
+    chatbot._db.rollback_last()
+    if chatbot.history and chatbot.history[-1]["role"] == "user":
+        chatbot.history.pop()
     return {"ok": True}
 
 
