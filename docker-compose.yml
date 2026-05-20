@@ -8,9 +8,10 @@ services:
     volumes:
       - chroma_data:/app/chroma_db
       - uploads_data:/app/uploads
-      - ./chat_history.db:/app/chat_history.db
+      - history_data:/app/chat_history.json
     restart: unless-stopped
 
 volumes:
   chroma_data:
   uploads_data:
+  history_data:
