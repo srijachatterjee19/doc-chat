@@ -1,6 +1,17 @@
 import { useRef, useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import { faVolumeHigh, faCircleStop } from '@fortawesome/free-solid-svg-icons'
+
+function stripMarkdown(text) {
+  return text
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[*_#>~]/g, '')
+    .trim()
+}
 
 function AgentCard({ agent, icon, summary, status }) {
   return (
@@ -19,10 +30,30 @@ export default function MessageList({ messages, streaming, interrupted, agentUpd
   const bottomRef = useRef(null)
   const messagesRef = useRef(null)
   const [showScrollTop, setShowScrollTop] = useState(false)
+  const [speakingIndex, setSpeakingIndex] = useState(null)
+  const canSpeak = typeof window !== 'undefined' && 'speechSynthesis' in window
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, agentUpdates])
+
+  useEffect(() => {
+    return () => window.speechSynthesis?.cancel()
+  }, [])
+
+  function toggleSpeak(i, text) {
+    if (!canSpeak) return
+    window.speechSynthesis.cancel()
+    if (speakingIndex === i) {
+      setSpeakingIndex(null)
+      return
+    }
+    const utterance = new SpeechSynthesisUtterance(stripMarkdown(text))
+    utterance.onend = () => setSpeakingIndex(null)
+    utterance.onerror = () => setSpeakingIndex(null)
+    window.speechSynthesis.speak(utterance)
+    setSpeakingIndex(i)
+  }
 
   useEffect(() => {
     const el = messagesRef.current
@@ -60,6 +91,15 @@ export default function MessageList({ messages, streaming, interrupted, agentUpd
                       msg.content
                     )}
                   </div>
+                  {canSpeak && msg.role === 'assistant' && msg.content && (
+                    <button
+                      className={`speaker-btn${speakingIndex === i ? ' speaker-btn--active' : ''}`}
+                      onClick={() => toggleSpeak(i, msg.content)}
+                      title={speakingIndex === i ? 'Stop reading' : 'Read aloud'}
+                    >
+                      <FontAwesomeIcon icon={speakingIndex === i ? faCircleStop : faVolumeHigh} />
+                    </button>
+                  )}
                 </div>
               </div>
             )

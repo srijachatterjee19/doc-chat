@@ -683,6 +683,35 @@ body {
   cursor: not-allowed;
 }
 
+/* ── Speaker button ── */
+
+.speaker-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-end;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  margin-left: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.speaker-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.speaker-btn--active {
+  color: var(--accent);
+}
+
 @keyframes mic-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.4); }
   50%       { box-shadow: 0 0 0 5px rgba(220, 38, 38, 0); }

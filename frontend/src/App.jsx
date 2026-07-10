@@ -159,7 +159,7 @@ function ChatApp() {
         return
       }
       track('upload_document', { file_type: file.type })
-      await refreshDocuments()
+      window.location.reload()
     } finally {
       setUploading(false)
     }
