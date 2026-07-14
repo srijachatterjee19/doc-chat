@@ -1,48 +1,67 @@
 import { useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faMicrophone, faCircleStop } from '@fortawesome/free-solid-svg-icons'
-
-const SpeechRecognitionAPI =
-  typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
+import { faMicrophone, faCircleStop, faSpinner } from '@fortawesome/free-solid-svg-icons'
 
 export default function InputArea({ input, streaming, onInputChange, onSend }) {
-  const [listening, setListening] = useState(false)
-  const recognitionRef = useRef(null)
+  const [recording, setRecording] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
+  const mediaRecorderRef = useRef(null)
+  const chunksRef = useRef([])
 
-  function toggleListening() {
-    if (!SpeechRecognitionAPI) return
-    if (listening) {
-      recognitionRef.current?.stop()
-      return
+  async function startRecording() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const recorder = new MediaRecorder(stream)
+    chunksRef.current = []
+    recorder.ondataavailable = e => chunksRef.current.push(e.data)
+    recorder.onstop = async () => {
+      stream.getTracks().forEach(track => track.stop())
+      setTranscribing(true)
+      try {
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType })
+        const form = new FormData()
+        form.append('file', blob, 'recording.webm')
+        const res = await fetch('/api/stt', { method: 'POST', body: form })
+        if (!res.ok) {
+          const err = await res.json()
+          alert(err.detail ?? 'Transcription failed.')
+          return
+        }
+        const { transcript } = await res.json()
+        if (transcript) {
+          onInputChange(prev => (prev ? `${prev} ${transcript}` : transcript))
+        }
+      } finally {
+        setTranscribing(false)
+      }
     }
-    const recognition = new SpeechRecognitionAPI()
-    recognition.lang = 'en-US'
-    recognition.interimResults = false
-    recognition.maxAlternatives = 1
-    recognition.onresult = e => {
-      const transcript = e.results[0][0].transcript
-      onInputChange(prev => (prev ? `${prev} ${transcript}` : transcript))
+    mediaRecorderRef.current = recorder
+    recorder.start()
+    setRecording(true)
+  }
+
+  function toggleRecording() {
+    if (recording) {
+      mediaRecorderRef.current?.stop()
+      setRecording(false)
+    } else {
+      startRecording()
     }
-    recognition.onend = () => setListening(false)
-    recognition.onerror = () => setListening(false)
-    recognitionRef.current = recognition
-    recognition.start()
-    setListening(true)
   }
 
   return (
     <div className="input-area">
-      {SpeechRecognitionAPI && (
-        <button
-          type="button"
-          className={`mic-btn${listening ? ' mic-btn--active' : ''}`}
-          onClick={toggleListening}
-          disabled={streaming}
-          title={listening ? 'Stop recording' : 'Speak your question'}
-        >
-          <FontAwesomeIcon icon={listening ? faCircleStop : faMicrophone} />
-        </button>
-      )}
+      <button
+        type="button"
+        className={`mic-btn${recording ? ' mic-btn--active' : ''}`}
+        onClick={toggleRecording}
+        disabled={streaming || transcribing}
+        title={recording ? 'Stop recording' : 'Speak your question'}
+      >
+        <FontAwesomeIcon
+          icon={transcribing ? faSpinner : recording ? faCircleStop : faMicrophone}
+          spin={transcribing}
+        />
+      </button>
       <input
         value={input}
         onChange={e => onInputChange(e.target.value)}

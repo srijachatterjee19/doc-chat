@@ -14,7 +14,7 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_community.callbacks import get_openai_callback
 from pydantic import BaseModel
@@ -38,6 +38,7 @@ def _contains_profanity(text: str) -> bool:
 from .src.rag import RAGChatbot
 from .src.vector_store import VectorStore
 from .src.analytics import init_db, log_event, get_dau, get_retention, get_funnel
+from .src import sarvam
 
 def _real_ip(request: Request) -> str:
     return (
@@ -349,6 +350,33 @@ async def serve_file(filename: str):
     from fastapi.responses import FileResponse
     media_type = "application/pdf" if filename.lower().endswith(".pdf") else "text/plain"
     return FileResponse(path, media_type=media_type, headers={"Content-Disposition": "inline"})
+
+
+@app.post("/api/stt")
+@limiter.limit("15/minute")
+async def speech_to_text(request: Request, file: UploadFile = File(...)):
+    """Transcribe uploaded audio via Sarvam AI."""
+    audio_bytes = await file.read()
+    try:
+        transcript = await sarvam.transcribe(audio_bytes, file.filename or "recording.webm")
+    except sarvam.SarvamError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"transcript": transcript}
+
+
+class TTSRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/tts")
+@limiter.limit("15/minute")
+async def text_to_speech(request: Request, body: TTSRequest):
+    """Synthesize speech for the given text via Sarvam AI."""
+    try:
+        audio_bytes = await sarvam.synthesize(body.text)
+    except sarvam.SarvamError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return Response(content=audio_bytes, media_type="audio/wav")
 
 
 class EventRequest(BaseModel):

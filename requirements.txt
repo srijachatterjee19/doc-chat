@@ -1,5 +1,6 @@
 fastapi==0.136.1
 uvicorn==0.46.0
+sarvamai==0.1.28
 langchain==1.2.15
 langchain-text-splitters==1.1.2
 langchain-openai==1.2.1

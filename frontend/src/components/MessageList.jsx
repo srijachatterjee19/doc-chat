@@ -2,7 +2,7 @@ import { useRef, useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faVolumeHigh, faCircleStop } from '@fortawesome/free-solid-svg-icons'
+import { faVolumeHigh, faCircleStop, faSpinner } from '@fortawesome/free-solid-svg-icons'
 
 function stripMarkdown(text) {
   return text
@@ -31,28 +31,53 @@ export default function MessageList({ messages, streaming, interrupted, agentUpd
   const messagesRef = useRef(null)
   const [showScrollTop, setShowScrollTop] = useState(false)
   const [speakingIndex, setSpeakingIndex] = useState(null)
-  const canSpeak = typeof window !== 'undefined' && 'speechSynthesis' in window
+  const [loadingIndex, setLoadingIndex] = useState(null)
+  const audioRef = useRef(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, agentUpdates])
 
   useEffect(() => {
-    return () => window.speechSynthesis?.cancel()
+    return () => audioRef.current?.pause()
   }, [])
 
-  function toggleSpeak(i, text) {
-    if (!canSpeak) return
-    window.speechSynthesis.cancel()
-    if (speakingIndex === i) {
-      setSpeakingIndex(null)
+  function stopSpeaking() {
+    audioRef.current?.pause()
+    audioRef.current = null
+    setSpeakingIndex(null)
+  }
+
+  async function toggleSpeak(i, text) {
+    if (speakingIndex === i || loadingIndex === i) {
+      stopSpeaking()
+      setLoadingIndex(null)
       return
     }
-    const utterance = new SpeechSynthesisUtterance(stripMarkdown(text))
-    utterance.onend = () => setSpeakingIndex(null)
-    utterance.onerror = () => setSpeakingIndex(null)
-    window.speechSynthesis.speak(utterance)
-    setSpeakingIndex(i)
+    stopSpeaking()
+    setLoadingIndex(i)
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: stripMarkdown(text) }),
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        alert(err.detail ?? 'Text-to-speech failed.')
+        return
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audio.onended = () => { stopSpeaking(); URL.revokeObjectURL(url) }
+      audio.onerror = () => { stopSpeaking(); URL.revokeObjectURL(url) }
+      audioRef.current = audio
+      setSpeakingIndex(i)
+      await audio.play()
+    } finally {
+      setLoadingIndex(null)
+    }
   }
 
   useEffect(() => {
@@ -91,13 +116,16 @@ export default function MessageList({ messages, streaming, interrupted, agentUpd
                       msg.content
                     )}
                   </div>
-                  {canSpeak && msg.role === 'assistant' && msg.content && (
+                  {msg.role === 'assistant' && msg.content && (
                     <button
                       className={`speaker-btn${speakingIndex === i ? ' speaker-btn--active' : ''}`}
                       onClick={() => toggleSpeak(i, msg.content)}
                       title={speakingIndex === i ? 'Stop reading' : 'Read aloud'}
                     >
-                      <FontAwesomeIcon icon={speakingIndex === i ? faCircleStop : faVolumeHigh} />
+                      <FontAwesomeIcon
+                        icon={loadingIndex === i ? faSpinner : speakingIndex === i ? faCircleStop : faVolumeHigh}
+                        spin={loadingIndex === i}
+                      />
                     </button>
                   )}
                 </div>

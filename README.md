@@ -4,6 +4,8 @@ A RAG (Retrieval-Augmented Generation) chatbot that answers questions about your
 
 **Stack:** OpenAI · LangChain · ChromaDB · CrewAI · FastAPI · React/Vite · Docker
 
+![DocChat architecture](doc-chat-design.jpg)
+
 ## Ingesting documents
 
 Documents can be uploaded directly from the UI sidebar (PDF, TXT, Markdown — up to 10 MB, 10,000 words).
@@ -70,6 +72,32 @@ Four layers of caching to avoid redundant API calls:
 | Embedding         | `text`                                  | 512 (lru_cache) | Process restart         |
 
 ---
+
+## API endpoints
+
+### Read
+
+| Endpoint                      | Purpose                                       |
+| ------------------------------ | ---------------------------------------------- |
+| `GET /api/history?session_id=` | Fetch persisted conversation for a session     |
+| `GET /api/status`              | Total ingested chunk count                     |
+| `GET /api/budget`              | Today's token usage vs. daily limit            |
+| `GET /api/documents`           | List ingested source files + chunk counts      |
+| `GET /api/models`              | Available chat models                          |
+| `GET /api/files/{filename}`    | Serve raw uploaded file content                |
+
+### Edit
+
+| Endpoint                                  | Purpose                                     |
+| ------------------------------------------ | -------------------------------------------- |
+| `POST /api/chat`                           | Send message, stream RAG response (SSE)     |
+| `POST /api/reset?session_id=`              | Clear a session's conversation history      |
+| `POST /api/history/rollback?session_id=`   | Remove orphaned last user turn              |
+| `POST /api/upload`                         | Ingest a new document (multipart file)      |
+| `DELETE /api/documents/{filename}`         | Remove a document + its chunks              |
+| `POST /api/stt`                            | Transcribe recorded audio → text            |
+| `POST /api/tts`                            | Synthesize text → audio                     |
+| `POST /api/payments/subscribe`             | Sandbox: grant Pro tier                     |
 
 ## Design decisions
 
