@@ -6,6 +6,8 @@ A RAG (Retrieval-Augmented Generation) chatbot that answers questions about your
 
 ![DocChat architecture](doc-chat-design.jpg)
 
+![DocChat](doc-chat-2.jpg)
+
 ## Ingesting documents
 
 Documents can be uploaded directly from the UI sidebar (PDF, TXT, Markdown — up to 10 MB, 10,000 words).
